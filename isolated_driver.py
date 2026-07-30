@@ -27,6 +27,7 @@ CLI = Path(
     "tools/motion_firmware_matrix/cli_phase2.py"
 )
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_FAILURE_EXCERPT_BYTES = 4 * 1024
 
 
 def matrix_commands() -> list[list[str]]:
@@ -282,6 +283,12 @@ def _process_group_still_exists(process_group: int) -> bool:
     return True
 
 
+def _failure_stderr_tail_hex(stderr: bytes) -> str:
+    """Encode a bounded failure tail without relaying terminal control bytes."""
+
+    return stderr[-MAX_FAILURE_EXCERPT_BYTES:].hex()
+
+
 def main() -> int:
     prepare_runtime_layout()
     summaries: list[dict[str, object]] = []
@@ -313,7 +320,10 @@ def main() -> int:
             raise RuntimeError("target command stderr exceeded the trusted limit")
         if result.returncode != 0:
             raise RuntimeError(
-                f"target command failed: {command[-3]} {command[-1]}"
+                f"target command failed: {command[-3]} {command[-1]}; "
+                f"returncode={result.returncode}; "
+                f"stderr_sha256={hashlib.sha256(result.stderr).hexdigest()}; "
+                f"stderr_tail_hex={_failure_stderr_tail_hex(result.stderr)}"
             )
         if _process_group_still_exists(process.pid):
             os.killpg(process.pid, signal.SIGKILL)
