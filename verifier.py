@@ -1498,12 +1498,15 @@ def create_pristine_idf_snapshot(
         temporary_root=temporary_root,
         home=home,
     )
+    canonical_destination = destination.resolve()
     for path in sorted(destination.rglob("*"), reverse=True):
         if path.is_symlink():
             resolved = path.resolve(strict=True)
             _require(
-                resolved == destination or destination in resolved.parents,
-                "ESP-IDF snapshot symlink escapes its root",
+                resolved == canonical_destination
+                or canonical_destination in resolved.parents,
+                "ESP-IDF snapshot symlink escapes its root: "
+                f"{path.relative_to(destination).as_posix()}",
             )
             continue
         if path.is_dir():

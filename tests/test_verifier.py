@@ -336,7 +336,14 @@ class TrustedVerifierTests(unittest.TestCase):
                 "print('trusted idf')\n",
                 encoding="utf-8",
             )
-            self.run_git(source, "add", ".gitignore", "tools/idf.py")
+            (source / "tools/idf-link.py").symlink_to("idf.py")
+            self.run_git(
+                source,
+                "add",
+                ".gitignore",
+                "tools/idf.py",
+                "tools/idf-link.py",
+            )
             self.run_git(source, "commit", "--quiet", "-m", "idf")
             commit = self.run_git(source, "rev-parse", "HEAD")
             tree = self.run_git(source, "rev-parse", "HEAD^{tree}")
@@ -355,6 +362,10 @@ class TrustedVerifierTests(unittest.TestCase):
             )
 
             self.assertTrue((destination / "tools/idf.py").is_file())
+            self.assertEqual(
+                (destination / "tools/idf-link.py").resolve(),
+                (destination / "tools/idf.py").resolve(),
+            )
             self.assertFalse((destination / "tools/json.pyc").exists())
             self.assertFalse((destination / ".git").exists())
             self.assertEqual(verifier._directory_closure(destination), closure)
