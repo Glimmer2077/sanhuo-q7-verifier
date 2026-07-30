@@ -101,9 +101,14 @@ class TrustedVerifierTests(unittest.TestCase):
             self.run_git(source, "init", "--quiet")
             self.run_git(source, "config", "user.name", "Q7 test")
             self.run_git(source, "config", "user.email", "q7@example.invalid")
-            (source / "tracked.txt").write_text("committed\n", encoding="utf-8")
+            (source / "tracked.txt").write_text("baseline\n", encoding="utf-8")
             self.run_git(source, "add", "tracked.txt")
-            self.run_git(source, "commit", "--quiet", "-m", "fixture")
+            self.run_git(source, "commit", "--quiet", "-m", "baseline")
+            baseline_commit = self.run_git(source, "rev-parse", "HEAD")
+
+            (source / "tracked.txt").write_text("target\n", encoding="utf-8")
+            self.run_git(source, "add", "tracked.txt")
+            self.run_git(source, "commit", "--quiet", "-m", "target")
             target_commit = self.run_git(source, "rev-parse", "HEAD")
 
             (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
@@ -116,6 +121,7 @@ class TrustedVerifierTests(unittest.TestCase):
             verifier.create_target_checkout(
                 target_commit=target_commit,
                 target_repository=source,
+                required_commits=(baseline_commit,),
                 checkout=checkout,
                 git_dir=git_dir,
                 home=git_home,
@@ -123,9 +129,15 @@ class TrustedVerifierTests(unittest.TestCase):
 
             self.assertEqual(
                 (checkout / "tracked.txt").read_text(encoding="utf-8"),
-                "committed\n",
+                "target\n",
             )
             self.assertFalse((checkout / "untracked.txt").exists())
+            self.run_git(
+                checkout,
+                "cat-file",
+                "-e",
+                f"{baseline_commit}^{{commit}}",
+            )
             self.assertNotIn(
                 str(source.resolve()),
                 (git_dir / "config").read_text(encoding="utf-8"),
@@ -220,6 +232,10 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertEqual(
             verifier.CANDIDATES,
             ("MF-P2", "MF-T0", "MF-T1", "MF-T2"),
+        )
+        self.assertEqual(
+            verifier.TARGET_REQUIRED_COMMITS,
+            ("8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",),
         )
         self.assertEqual(
             verifier.container_actions(),

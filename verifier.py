@@ -21,6 +21,9 @@ from typing import Any, Final
 REPOSITORY: Final = "Glimmer2077/sanhuo-robot"
 VERIFIER_REPOSITORY: Final = "Glimmer2077/sanhuo-q7-verifier"
 CANDIDATES: Final = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
+TARGET_REQUIRED_COMMITS: Final = (
+    "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
+)
 ROLES: Final = ("primary", "verifier")
 MAX_REPORT_BYTES: Final = 256 * 1024
 MAX_FINDINGS: Final = 100
@@ -979,6 +982,7 @@ def create_target_checkout(
     *,
     target_commit: str,
     target_repository: Path,
+    required_commits: tuple[str, ...] = TARGET_REQUIRED_COMMITS,
     checkout: Path,
     git_dir: Path,
     home: Path,
@@ -986,6 +990,16 @@ def create_target_checkout(
     """Copy only the requested local Git commit into a disposable checkout."""
 
     _validate_commit(target_commit, "target")
+    _require(
+        type(required_commits) is tuple
+        and len(required_commits) <= 4
+        and len(set(required_commits)) == len(required_commits)
+        and target_commit not in required_commits,
+        "required target commits are invalid",
+    )
+    for commit in required_commits:
+        _validate_commit(commit, "required target")
+    requested_commits = (target_commit, *required_commits)
     _require(
         not target_repository.is_symlink(),
         "target repository is not a regular Git worktree",
@@ -1007,20 +1021,21 @@ def create_target_checkout(
         Path(source_top).resolve() == source,
         "target repository root does not match tool workspace",
     )
-    source_commit = _git(
-        [
-            "-C",
-            str(source),
-            "rev-parse",
-            "--verify",
-            f"{target_commit}^{{commit}}",
-        ],
-        home=home,
-    ).decode("ascii").strip()
-    _require(
-        source_commit == target_commit,
-        "local target commit does not match request",
-    )
+    for commit in requested_commits:
+        source_commit = _git(
+            [
+                "-C",
+                str(source),
+                "rev-parse",
+                "--verify",
+                f"{commit}^{{commit}}",
+            ],
+            home=home,
+        ).decode("ascii").strip()
+        _require(
+            source_commit == commit,
+            "local target commit does not match request",
+        )
     _require(not checkout.exists(), "disposable checkout already exists")
     _require(not git_dir.exists(), "disposable Git directory already exists")
     _git(
@@ -1040,22 +1055,23 @@ def create_target_checkout(
             "--depth=1",
             "--no-write-fetch-head",
             str(source),
-            target_commit,
+            *requested_commits,
         ],
         home=home,
         timeout=600,
     )
-    fetched = _git(
-        [
-            "--git-dir",
-            str(git_dir),
-            "rev-parse",
-            "--verify",
-            f"{target_commit}^{{commit}}",
-        ],
-        home=home,
-    ).decode("ascii").strip()
-    _require(fetched == target_commit, "copied target commit does not match request")
+    for commit in requested_commits:
+        fetched = _git(
+            [
+                "--git-dir",
+                str(git_dir),
+                "rev-parse",
+                "--verify",
+                f"{commit}^{{commit}}",
+            ],
+            home=home,
+        ).decode("ascii").strip()
+        _require(fetched == commit, "copied target commit does not match request")
     _git(
         [
             "--git-dir",
