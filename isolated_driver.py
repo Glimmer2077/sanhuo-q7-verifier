@@ -27,7 +27,7 @@ CLI = Path(
     "tools/motion_firmware_matrix/cli_phase2.py"
 )
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
-MAX_FAILURE_EXCERPT_BYTES = 4 * 1024
+MAX_FAILURE_EXCERPT_BYTES = 128
 
 
 def matrix_commands() -> list[list[str]]:
