@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import isolated_driver
@@ -66,6 +68,63 @@ class IsolatedDriverTests(unittest.TestCase):
             closed["SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT"],
             "/tmp/runtime/platformio-core",
         )
+
+    def test_runtime_layout_links_only_fixed_platformio_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            platformio = root / "locked-platformio"
+            cli = root / "cli_phase2.py"
+            cli.write_text("# fixture\n", encoding="utf-8")
+            (platformio / "platforms/espressif32").mkdir(parents=True)
+            package_names = (
+                "framework-arduinoespressif32",
+                "toolchain-xtensa-esp32s3",
+                "toolchain-riscv32-esp",
+                "tool-esptoolpy",
+                "tool-scons",
+            )
+            for name in package_names:
+                (platformio / "packages" / name).mkdir(parents=True)
+
+            with (
+                mock.patch.object(isolated_driver, "CLI", cli),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "SANHUO_Q7_RUNTIME_HOME": str(runtime),
+                        "SANHUO_Q7_PLATFORMIO_ROOT": str(platformio),
+                    },
+                    clear=True,
+                ),
+            ):
+                isolated_driver.prepare_runtime_layout()
+
+            platform_link = (
+                runtime / "platformio-core/platforms/espressif32"
+            )
+            self.assertTrue(platform_link.is_symlink())
+            self.assertEqual(
+                platform_link.resolve(),
+                (platformio / "platforms/espressif32").resolve(),
+            )
+            self.assertEqual(
+                {
+                    path.name
+                    for path in (
+                        runtime / "platformio-core/packages"
+                    ).iterdir()
+                },
+                set(package_names),
+            )
+            self.assertTrue(
+                all(
+                    path.is_symlink()
+                    for path in (
+                        runtime / "platformio-core/packages"
+                    ).iterdir()
+                )
+            )
 
 
 if __name__ == "__main__":

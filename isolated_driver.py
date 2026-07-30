@@ -13,6 +13,14 @@ from pathlib import Path
 
 
 CANDIDATES = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
+PLATFORMIO_PLATFORM_INPUTS = ("espressif32",)
+PLATFORMIO_PACKAGE_INPUTS = (
+    "framework-arduinoespressif32",
+    "toolchain-xtensa-esp32s3",
+    "toolchain-riscv32-esp",
+    "tool-esptoolpy",
+    "tool-scons",
+)
 CLI = Path(
     os.environ.get("SANHUO_Q7_CHECKOUT", "/workspace")
     + "/firmware/sanhuo-stackchan-idf/"
@@ -237,9 +245,31 @@ def prepare_runtime_layout() -> None:
     if not CLI.is_file():
         raise RuntimeError("target Q7 CLI is missing")
     runtime_home = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
+    platformio_root = Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
     (runtime_home / "output/artifacts").mkdir(parents=True)
     (runtime_home / "output/binaries").mkdir(parents=True)
-    (runtime_home / "platformio-core").mkdir()
+    runtime_platformio = runtime_home / "platformio-core"
+    runtime_platforms = runtime_platformio / "platforms"
+    runtime_packages = runtime_platformio / "packages"
+    runtime_platforms.mkdir(parents=True)
+    runtime_packages.mkdir()
+    (runtime_platformio / "cache").mkdir()
+    for name in PLATFORMIO_PLATFORM_INPUTS:
+        source = platformio_root / "platforms" / name
+        if not source.is_dir() or source.is_symlink():
+            raise RuntimeError("locked PlatformIO platform input is invalid")
+        (runtime_platforms / name).symlink_to(
+            source.resolve(),
+            target_is_directory=True,
+        )
+    for name in PLATFORMIO_PACKAGE_INPUTS:
+        source = platformio_root / "packages" / name
+        if not source.is_dir() or source.is_symlink():
+            raise RuntimeError("locked PlatformIO package input is invalid")
+        (runtime_packages / name).symlink_to(
+            source.resolve(),
+            target_is_directory=True,
+        )
 
 
 def _process_group_still_exists(process_group: int) -> bool:
