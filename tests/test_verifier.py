@@ -561,6 +561,8 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn('(subpath (param "ACTION_BINARY_ROOT"))', profile)
         self.assertIn('(subpath (param "XCODE_FRAMEWORKS"))', profile)
         self.assertIn('(subpath (param "XCODE_SHARED_FRAMEWORKS"))', profile)
+        self.assertIn('(literal "/private/etc/paths")', profile)
+        self.assertIn('(subpath "/private/etc/paths.d")', profile)
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/dev/urandom")', profile)
 
@@ -705,6 +707,10 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    pass\n"
                     "else:\n"
                     "    raise RuntimeError('unlisted host data became readable')\n"
+                    "Path('/private/etc/paths').read_text(encoding='utf-8')\n"
+                    "paths_d=Path('/private/etc/paths.d')\n"
+                    "if not paths_d.is_dir() or not list(paths_d.iterdir()):\n"
+                    "    raise RuntimeError('fixed system PATH inputs are unreadable')\n"
                     "xcode=subprocess.run(\n"
                     "    ['/usr/bin/xcrun', '--find', 'xcodebuild'],\n"
                     "    check=False, stdout=subprocess.PIPE,\n"

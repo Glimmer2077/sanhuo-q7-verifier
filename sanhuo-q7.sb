@@ -73,6 +73,8 @@
   (subpath (param "EXEC_HOMEBREW_NINJA"))
   (subpath (param "EXEC_IDF_PYTHON"))
   (subpath (param "EXEC_IDF_XTENSA"))
+  (literal "/private/etc/paths")
+  (subpath "/private/etc/paths.d")
   (subpath "/private/var/db/timezone")
   (literal "/dev/null")
   (literal "/dev/random")
