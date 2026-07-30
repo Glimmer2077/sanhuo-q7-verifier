@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import verifier
 
@@ -40,6 +41,9 @@ class TrustedVerifierTests(unittest.TestCase):
                 "elf_semantic_sha256": "6" * 64,
                 "gate_evidence_sha256": {
                     f"Q{index}": f"{index + 7:x}"[-1] * 64 for index in range(7)
+                },
+                "gate_semantic_summary": {
+                    f"Q{index}": {"validated": True} for index in range(7)
                 },
             }
             for candidate in verifier.CANDIDATES
@@ -93,7 +97,10 @@ class TrustedVerifierTests(unittest.TestCase):
                 "candidate_id": "MF-P2",
                 "gate": gate,
                 "status": "passed",
-                "evidence_sha256": f"{index + 1:x}" * 64,
+                "evidence": {"gate": gate, "index": index},
+                "evidence_sha256": verifier.sha256_json(
+                    {"gate": gate, "index": index}
+                ),
                 "covered": ["direct evidence"],
                 "not_covered": [],
             }
@@ -138,29 +145,62 @@ class TrustedVerifierTests(unittest.TestCase):
                 gate: gate_reports[gate]["evidence_sha256"] for gate in verifier.GATES
             },
             "manifest_gates": manifest_gates,
+            "build": {},
+            "trusted_elf": {},
+            "trusted_q0": {},
         }
 
-        verifier._validate_precheck_artifacts(**arguments)
+        with mock.patch.object(
+            verifier,
+            "_validate_gate_semantics",
+            return_value={"validated": True},
+        ):
+            verifier._validate_precheck_artifacts(**arguments)
 
         tampered_reports = copy.deepcopy(gate_reports)
         tampered_reports["Q3"]["covered"] = []
-        with self.assertRaisesRegex(
-            verifier.VerificationError,
-            "Q3 report is invalid",
+        with mock.patch.object(
+            verifier,
+            "_validate_gate_semantics",
+            return_value={"validated": True},
         ):
-            verifier._validate_precheck_artifacts(
-                **{**arguments, "gate_reports": tampered_reports}
-            )
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "Q3 report is invalid",
+            ):
+                verifier._validate_precheck_artifacts(
+                    **{**arguments, "gate_reports": tampered_reports}
+                )
 
         tampered_summary = copy.deepcopy(summary)
         tampered_summary["hardware_authorized"] = True
-        with self.assertRaisesRegex(
-            verifier.VerificationError,
-            "qualification summary is invalid",
+        with mock.patch.object(
+            verifier,
+            "_validate_gate_semantics",
+            return_value={"validated": True},
         ):
-            verifier._validate_precheck_artifacts(
-                **{**arguments, "summary": tampered_summary}
-            )
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "qualification summary is invalid",
+            ):
+                verifier._validate_precheck_artifacts(
+                    **{**arguments, "summary": tampered_summary}
+                )
+
+        tampered_raw = copy.deepcopy(gate_reports)
+        tampered_raw["Q2"]["evidence"]["index"] = 999
+        with mock.patch.object(
+            verifier,
+            "_validate_gate_semantics",
+            return_value={"validated": True},
+        ):
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "raw evidence hash drift",
+            ):
+                verifier._validate_precheck_artifacts(
+                    **{**arguments, "gate_reports": tampered_raw}
+                )
 
     def approved_report(
         self,
@@ -280,6 +320,45 @@ class TrustedVerifierTests(unittest.TestCase):
             self.assertFalse((root / "checkout").exists())
             self.assertFalse((root / "target.git").exists())
 
+    def test_pristine_idf_snapshot_excludes_ignored_python_and_git_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "idf"
+            source.mkdir()
+            self.run_git(source, "init", "--quiet")
+            self.run_git(source, "config", "user.name", "Q7 test")
+            self.run_git(source, "config", "user.email", "q7@example.invalid")
+            (source / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+            (source / "tools").mkdir()
+            (source / "tools/idf.py").write_text(
+                "print('trusted idf')\n",
+                encoding="utf-8",
+            )
+            self.run_git(source, "add", ".gitignore", "tools/idf.py")
+            self.run_git(source, "commit", "--quiet", "-m", "idf")
+            commit = self.run_git(source, "rev-parse", "HEAD")
+            tree = self.run_git(source, "rev-parse", "HEAD^{tree}")
+            (source / "tools/json.pyc").write_bytes(b"ignored attack")
+            destination = root / "pristine"
+            git_home = root / "git-home"
+            git_home.mkdir()
+
+            closure = verifier.create_pristine_idf_snapshot(
+                source_root=source,
+                destination=destination,
+                expected_commit=commit,
+                expected_tree=tree,
+                temporary_root=root,
+                home=git_home,
+            )
+
+            self.assertTrue((destination / "tools/idf.py").is_file())
+            self.assertFalse((destination / "tools/json.pyc").exists())
+            self.assertFalse((destination / ".git").exists())
+            self.assertEqual(verifier._directory_closure(destination), closure)
+
     def test_sandbox_has_no_network_devices_or_credentials(self) -> None:
         command = verifier.sandbox_command(
             checkout=Path("/tmp/checkout"),
@@ -347,6 +426,10 @@ class TrustedVerifierTests(unittest.TestCase):
             str((Path("/tmp/trusted") / "isolated_driver.py").resolve()),
             command,
         )
+        driver_index = command.index(
+            str((Path("/tmp/trusted") / "isolated_driver.py").resolve())
+        )
+        self.assertEqual(command[driver_index - 2 : driver_index], ["-I", "-S"])
         qualify_command = verifier.sandbox_command(
             checkout=Path("/tmp/checkout"),
             git_dir=Path("/tmp/target.git"),
@@ -389,12 +472,25 @@ class TrustedVerifierTests(unittest.TestCase):
 
         self.assertIn("(deny default)", profile)
         self.assertNotIn("(allow network", profile)
-        self.assertIn('(deny file-read*\n  (subpath "/Users")', profile)
-        self.assertIn(
-            '(require-not (subpath (param "RUNTIME_HOME")))',
-            profile,
-        )
-        self.assertIn('(subpath "/dev"))', profile)
+        self.assertIn("(allow file-read*)", profile)
+        deny_read = profile.split("(deny file-read*", 1)[1].split(
+            "(allow file-read*", 1
+        )[0]
+        for closed_root in (
+            "/Applications",
+            "/Library",
+            "/Network",
+            "/Users",
+            "/Volumes",
+            "/cores",
+            "/dev",
+            "/home",
+            "/opt",
+            "/private",
+        ):
+            self.assertIn(f'(subpath "{closed_root}")', deny_read)
+        self.assertNotIn('(subpath "/private/etc")', profile)
+        self.assertNotIn('(subpath "/private/var")', profile)
         self.assertNotIn('(allow file-read*\n  (subpath "/dev")', profile)
         self.assertIn('(subpath (param "GIT_DIR"))', profile)
         self.assertIn('(subpath (param "SEALED_INPUT"))', profile)
@@ -513,6 +609,8 @@ class TrustedVerifierTests(unittest.TestCase):
                 f"ESPRESSIF_ROOT={paths['cache']}",
                 "-D",
                 f"TEST_USER_SITE_ROOT={paths['cache']}",
+                "-D",
+                f"TEST_GLOBAL_SITE_ROOT={paths['cache']}",
                 *[
                     item
                     for name in (
@@ -535,6 +633,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 "/usr/bin/env",
                 "-i",
                 f"TMPDIR={paths['runtime'] / 'tmp'}",
+                "PYTHONFAULTHANDLER=1",
                 str(Path(sys.executable).resolve()),
                 "-c",
                 (
@@ -548,6 +647,12 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    pass\n"
                     "else:\n"
                     "    raise RuntimeError('sibling temp file became readable')\n"
+                    "try:\n"
+                    "    Path('/private/etc/hosts').read_text(encoding='utf-8')\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('unlisted host data became readable')\n"
                     f"platform_lock=Path({json.dumps(str(platform_lock))})\n"
                     "platform_lock.write_text('ephemeral', encoding='utf-8')\n"
                     f"package_lock=Path({json.dumps(str(package_lock))})\n"
@@ -604,7 +709,10 @@ class TrustedVerifierTests(unittest.TestCase):
             self.assertEqual(
                 result.returncode,
                 0,
-                result.stderr.decode("utf-8", errors="replace"),
+                (
+                    result.stdout.decode("utf-8", errors="replace")
+                    + result.stderr.decode("utf-8", errors="replace")
+                ),
             )
 
     def test_only_the_four_fixed_candidates_are_run(self) -> None:
@@ -897,6 +1005,39 @@ class TrustedVerifierTests(unittest.TestCase):
             all(value is False for value in primary["attestations"].values())
         )
         self.assertNotEqual(primary["challenge"], checking["challenge"])
+
+    def test_review_bundle_reconstructs_exact_rendered_prompt_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "review"
+            evidence = self.matrix_evidence()
+            bundle = verifier.build_review_prompt_bundle(
+                target_commit="a" * 40,
+                verifier_commit_sha="b" * 40,
+                review_session_nonce="d" * 64,
+                evidence=evidence,
+            )
+            verifier.write_prompt_bundle(output, bundle)
+
+            loaded = verifier.load_review_bundle(
+                output,
+                target_commit="a" * 40,
+                verifier_commit_sha="b" * 40,
+            )
+            self.assertEqual(loaded, bundle)
+
+            (output / "primary-prompt.md").write_text(
+                "weakened prompt\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "rendered prompt bytes drift",
+            ):
+                verifier.load_review_bundle(
+                    output,
+                    target_commit="a" * 40,
+                    verifier_commit_sha="b" * 40,
+                )
 
     def test_prevalidation_requires_same_evidence_for_both_reports(self) -> None:
         reports = {

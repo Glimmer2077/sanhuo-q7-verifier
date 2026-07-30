@@ -7,10 +7,20 @@
 
 ## 最短流程
 
-1. 生成两份审查提示：
+0. 从要审查的精确验证器提交下载启动器。不要从本地验证器工作区直接运行
+   `verifier.py`：
 
    ```bash
-   /usr/bin/python3 -I verifier.py prepare \
+   /usr/bin/curl --proto '=https' --tlsv1.2 --fail --location \
+     --output /private/tmp/sanhuo-q7-bootstrap.py \
+     https://raw.githubusercontent.com/Glimmer2077/sanhuo-q7-verifier/<验证器40位提交>/bootstrap.py
+   ```
+
+1. 通过启动器生成两份审查提示：
+
+   ```bash
+   /usr/bin/python3 -I /private/tmp/sanhuo-q7-bootstrap.py \
+     --verifier-commit <同一个验证器40位提交> prepare \
      --target-commit <三火仓库的40位提交> \
      --tool-workspace "/Users/glimmer/Documents/三火机器人" \
      --output-directory /tmp/sanhuo-q7-prompts
@@ -25,7 +35,8 @@
 3. 收回报告并生成一个四候选共同结论：
 
    ```bash
-   /usr/bin/python3 -I verifier.py verify \
+   /usr/bin/python3 -I /private/tmp/sanhuo-q7-bootstrap.py \
+     --verifier-commit <同一个验证器40位提交> verify \
      --target-commit <同一个40位提交> \
      --tool-workspace "/Users/glimmer/Documents/三火机器人" \
      --review-directory /tmp/sanhuo-q7-prompts \
@@ -34,6 +45,11 @@
 
 ## 固定边界
 
+- 启动器只从 GitHub 的精确 40 位提交下载封闭文件集，拒绝额外文件、Python
+  缓存、符号链接和特殊文件；只把 `verifier.py`、`isolated_driver.py`
+  与沙箱规则复制到新的只读临时快照，运行结束后再次核对其完整闭包。
+- 验证器拒绝从任意本地 worktree 直接启动；它只接受上述精确提交启动器
+  设置的提交、只读快照和 Apple 隔离 Python 身份。
 - 从 `--tool-workspace` 的本机 Git 对象库复制指定的精确提交到一次性目录；
   不读取当前工作区文件，不带入未提交改动，并禁用 Git replace 和继承配置。
 - 同时只复制构建源码差异审计所需的固定冻结基线
@@ -46,7 +62,10 @@
 - 外层验证器只接受 Apple Xcode 自带的隔离 Python；并在任何被审 Python、
   构建器或 ELF 工具运行前，独立核对固定工具链清单和全部目录闭包。
 - 被审代码只会在 macOS `sandbox-exec` 中运行；没有网络、设备树、宿主
-  凭证或报告目录访问权。
+  凭证或报告目录访问权。macOS 系统解析所需的只读命名空间保留，但
+  `/Users`、`/Volumes`、`/Network`、`/Applications`、`/Library`、
+  `/opt`、`/private` 和 `/dev` 全部重新关闭，只按精确工具链、checkout、
+  缓存、输出与 `/private/var/db/timezone` 等固定输入逐项重开。
 - 四候选的 `build / qualify / audit` 共 12 个固定命令，每个命令使用新的
   可写隔离区；构建只能写首次为空的当前候选目录，后续步骤只能写本步规定的
   精确文件，可信层还会核对“原有证据字节不变，且只新增本步规定文件”的
@@ -60,11 +79,17 @@
   只对原始根目录下 PlatformIO 自身的 `platforms.lock`、`packages.lock`
   两个临时并发锁开放精确写权限。这两个文件不是构建输入，也不进入工具链闭包
   或最终证据。
+- ESP-IDF 不再直接使用可能含忽略文件的本机 worktree；外层从锁定提交和
+  递归子模块 Git 对象重建只读快照，逐 blob 核对身份，并在 12 个动作结束
+  后复核完整闭包。
 - 当前 ELF 的原始哈希、去符号语义哈希和能力，在最终只读快照上由本仓库
-  代码重新计算。
+  代码重新计算。Q0～Q6 七份原始报告也由可信层重算哈希并逐门验收安全语义，
+  不接受被审代码自己声明的 `passed` 摘要代替原始事实。
 - 每次 `prepare` 都生成新的随机审查挑战；两份报告必须与同目录提示包中的
-  目标提交、验证器提交和证据完全一致。同一组不可变输入可以重复验证并得到
-  同一结论，但报告不能挪用于不同提交、不同验证器或不同证据。
+  目标提交、验证器提交和证据完全一致。`verify` 会重建整个 JSON 提示包并
+  逐字节核对两份 Markdown 提示；矩阵结束后再次核对提示和报告快照。同一组
+  不可变输入可以重复验证并得到同一结论，但报告不能挪用于不同提交、不同
+  验证器或不同证据。
 - 任何一项漂移都不产生结果文件；通过结果也始终保持所有硬件权限为
   `false`，命令列表为空。
 

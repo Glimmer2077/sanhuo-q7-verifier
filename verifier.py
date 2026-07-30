@@ -4,17 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from collections.abc import Mapping, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -95,6 +98,7 @@ EVIDENCE_FIELDS: Final = {
     "elf_sha256",
     "elf_semantic_sha256",
     "gate_evidence_sha256",
+    "gate_semantic_summary",
 }
 GATES: Final = tuple(f"Q{index}" for index in range(7))
 GATE_REPORT_FIELDS: Final = {
@@ -102,6 +106,7 @@ GATE_REPORT_FIELDS: Final = {
     "candidate_id",
     "gate",
     "status",
+    "evidence",
     "evidence_sha256",
     "covered",
     "not_covered",
@@ -144,6 +149,11 @@ GIT_ENVIRONMENT_FIELDS: Final = {
     "GIT_CONFIG_GLOBAL",
     "GIT_TERMINAL_PROMPT",
     "GIT_OPTIONAL_LOCKS",
+}
+TRUSTED_SNAPSHOT_FILES: Final = {
+    "isolated_driver.py",
+    "sanhuo-q7.sb",
+    "verifier.py",
 }
 
 
@@ -249,7 +259,7 @@ def _validate_evidence(evidence: object) -> dict[str, Any]:
         normalized = {
             field: _validate_sha256(item[field], f"{candidate} {field}")
             for field in EVIDENCE_FIELDS
-            if field != "gate_evidence_sha256"
+            if field not in {"gate_evidence_sha256", "gate_semantic_summary"}
         }
         gates = item["gate_evidence_sha256"]
         _require(type(gates) is dict, f"{candidate} gate evidence is invalid")
@@ -260,6 +270,17 @@ def _validate_evidence(evidence: object) -> dict[str, Any]:
                 f"{candidate} {gate} evidence",
             )
             for gate in GATES
+        }
+        semantic = item["gate_semantic_summary"]
+        _require(
+            type(semantic) is dict
+            and set(semantic) == set(GATES)
+            and all(type(semantic[gate]) is dict for gate in GATES)
+            and len(canonical_json_bytes(semantic)) <= 128 * 1024,
+            f"{candidate} gate semantic summary is invalid",
+        )
+        normalized["gate_semantic_summary"] = {
+            gate: dict(semantic[gate]) for gate in GATES
         }
         validated[candidate] = normalized
     return validated
@@ -798,6 +819,11 @@ def sandbox_command(
         f"ESPRESSIF_ROOT={espressif_root}",
         "-D",
         f"TEST_USER_SITE_ROOT={test_user_site_root.resolve()}",
+        "-D",
+        (
+            "TEST_GLOBAL_SITE_ROOT="
+            f"{(homebrew_root / 'lib/python3.11/site-packages').resolve()}"
+        ),
         *[
             item
             for name, path in executable_roots.items()
@@ -841,6 +867,8 @@ def sandbox_command(
             else []
         ),
         str(python_root / "bin/python3"),
+        "-I",
+        "-S",
         str(driver),
     ]
     return command
@@ -1044,8 +1072,11 @@ def resolve_runtime_inputs(tool_workspace: Path, home: Path) -> RuntimeInputs:
     return inputs
 
 
-def require_trusted_launcher() -> None:
-    """Require Apple's isolated Python as the verifier's outer trust root."""
+def require_trusted_launcher(
+    trusted_root: Path,
+    verifier_commit_sha: str,
+) -> None:
+    """Require the exact read-only snapshot created by the remote bootstrap."""
 
     executable = Path(sys.executable).resolve()
     developer_root = Path("/Applications/Xcode.app/Contents/Developer").resolve()
@@ -1053,6 +1084,35 @@ def require_trusted_launcher() -> None:
     _require(
         executable == developer_root or developer_root in executable.parents,
         "verifier must run with Apple Xcode Python",
+    )
+    _validate_commit(verifier_commit_sha, "verifier")
+    _require(
+        os.environ.get("SANHUO_Q7_TRUSTED_BOOTSTRAP") == "1"
+        and os.environ.get("SANHUO_Q7_VERIFIER_COMMIT") == verifier_commit_sha
+        and os.environ.get("SANHUO_Q7_TRUSTED_ROOT") == str(trusted_root),
+        "verifier must run through the exact-commit bootstrap",
+    )
+    _require(
+        trusted_root.is_dir()
+        and not trusted_root.is_symlink()
+        and not (trusted_root / ".git").exists(),
+        "trusted verifier snapshot root is invalid",
+    )
+    observed: set[str] = set()
+    for entry in os.scandir(trusted_root):
+        _require(
+            entry.name in TRUSTED_SNAPSHOT_FILES
+            and entry.is_file(follow_symlinks=False),
+            "trusted verifier snapshot contains an unexpected entry",
+        )
+        _require(
+            stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode) & 0o222 == 0,
+            "trusted verifier snapshot file is writable",
+        )
+        observed.add(entry.name)
+    _require(
+        observed == TRUSTED_SNAPSHOT_FILES,
+        "trusted verifier snapshot file set drift",
     )
 
 
@@ -1124,6 +1184,337 @@ def _directory_closure(path: Path) -> dict[str, int | str]:
     }
 
 
+def _git_directory(worktree: Path) -> Path:
+    marker = worktree / ".git"
+    _require(not marker.is_symlink(), "Git directory marker cannot be a symlink")
+    if marker.is_dir():
+        return marker.resolve()
+    _require(marker.is_file(), "required Git object store is missing")
+    payload = marker.read_text(encoding="utf-8")
+    _require(
+        payload.startswith("gitdir: ")
+        and len(payload.splitlines()) == 1,
+        "Git directory marker is invalid",
+    )
+    git_dir = (worktree / payload.removeprefix("gitdir: ").strip()).resolve()
+    _require(git_dir.is_dir(), "resolved Git object store is missing")
+    return git_dir
+
+
+def _git_object(
+    git_dir: Path,
+    arguments: list[str],
+    *,
+    home: Path,
+    timeout: int = 300,
+) -> bytes:
+    return _git(
+        ["--git-dir", str(git_dir), *arguments],
+        home=home,
+        timeout=timeout,
+    )
+
+
+def _git_tree_entries(
+    git_dir: Path,
+    commit: str,
+    *,
+    home: Path,
+) -> dict[str, tuple[str, str, str]]:
+    payload = _git_object(
+        git_dir,
+        ["ls-tree", "-r", "-z", commit],
+        home=home,
+    )
+    entries: dict[str, tuple[str, str, str]] = {}
+    for raw_entry in payload.split(b"\0"):
+        if not raw_entry:
+            continue
+        header, separator, raw_path = raw_entry.partition(b"\t")
+        _require(bool(separator), "Git tree entry is malformed")
+        try:
+            mode, object_type, object_id = header.decode("ascii").split(" ")
+            path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise VerificationError("Git tree entry is invalid") from exc
+        relative = PurePosixPath(path)
+        _require(
+            not relative.is_absolute()
+            and ".." not in relative.parts
+            and "\\" not in path
+            and path not in entries,
+            "Git tree path is invalid",
+        )
+        _require(
+            (mode in {"100644", "100755", "120000"} and object_type == "blob")
+            or (mode == "160000" and object_type == "commit"),
+            "Git tree object type is unsupported",
+        )
+        _validate_commit(object_id, "Git tree object")
+        entries[path] = (mode, object_type, object_id)
+    return entries
+
+
+def _git_blob_id(payload: bytes, expected: str) -> str:
+    framed = b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+    _require(len(expected) == 40, "only SHA-1 Git repositories are supported")
+    return hashlib.sha1(framed).hexdigest()
+
+
+def _extract_git_commit(
+    *,
+    source_worktree: Path,
+    git_dir: Path,
+    commit: str,
+    destination: Path,
+    snapshot_root: Path,
+    temporary_root: Path,
+    home: Path,
+) -> None:
+    """Export one exact Git tree and recursively materialize every gitlink."""
+
+    resolved_commit = (
+        _git_object(
+            git_dir,
+            ["rev-parse", "--verify", f"{commit}^{{commit}}"],
+            home=home,
+        )
+        .decode("ascii")
+        .strip()
+    )
+    _require(resolved_commit == commit, "Git commit identity drift")
+    entries = _git_tree_entries(git_dir, commit, home=home)
+    archive_path = temporary_root / f"archive-{secrets.token_hex(8)}.tar"
+    _git_object(
+        git_dir,
+        [
+            "archive",
+            "--format=tar",
+            f"--output={archive_path}",
+            commit,
+        ],
+        home=home,
+        timeout=600,
+    )
+    _require(
+        archive_path.is_file() and not archive_path.is_symlink(),
+        "Git archive was not created",
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    try:
+        with tarfile.open(archive_path, mode="r:") as archive:
+            for member in archive:
+                relative = PurePosixPath(member.name)
+                _require(
+                    not relative.is_absolute()
+                    and ".." not in relative.parts
+                    and "\\" not in member.name,
+                    "Git archive path is unsafe",
+                )
+                name = relative.as_posix().rstrip("/")
+                if member.isdir():
+                    _require(
+                        any(
+                            path == name
+                            or path.startswith(f"{name}/")
+                            for path in entries
+                        ),
+                        "Git archive contains an unexpected directory",
+                    )
+                    (destination / name).mkdir(parents=True, exist_ok=True)
+                    continue
+                _require(
+                    name in entries and name not in seen,
+                    "Git archive file set drift",
+                )
+                seen.add(name)
+                mode, object_type, object_id = entries[name]
+                _require(object_type == "blob", "Git archive exposed a gitlink body")
+                output = destination / name
+                output.parent.mkdir(parents=True, exist_ok=True)
+                _require(not output.exists() and not output.is_symlink(), "Git archive collided")
+                if mode == "120000":
+                    _require(
+                        member.issym() and not member.islnk(),
+                        "Git symlink representation drift",
+                    )
+                    target = member.linkname
+                    link_from_root = PurePosixPath(
+                        output.relative_to(snapshot_root).as_posix()
+                    )
+                    normalized_target = posixpath.normpath(
+                        (link_from_root.parent / target).as_posix()
+                    )
+                    _require(
+                        not PurePosixPath(target).is_absolute()
+                        and normalized_target != ".."
+                        and not normalized_target.startswith("../"),
+                        "Git symlink escapes the pristine snapshot",
+                    )
+                    payload = target.encode("utf-8")
+                    _require(
+                        _git_blob_id(payload, object_id) == object_id,
+                        "Git symlink blob drift",
+                    )
+                    os.symlink(target, output)
+                else:
+                    _require(
+                        member.isfile() and not member.issym() and not member.islnk(),
+                        "Git regular file representation drift",
+                    )
+                    stream = archive.extractfile(member)
+                    _require(stream is not None, "Git archive file cannot be read")
+                    payload = stream.read()
+                    _require(
+                        _git_blob_id(payload, object_id) == object_id,
+                        "Git archive blob drift",
+                    )
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    descriptor = os.open(
+                        output,
+                        flags,
+                        0o555 if mode == "100755" else 0o444,
+                    )
+                    try:
+                        offset = 0
+                        while offset < len(payload):
+                            written = os.write(descriptor, payload[offset:])
+                            _require(written > 0, "Git archive write was incomplete")
+                            offset += written
+                    finally:
+                        os.close(descriptor)
+    except (OSError, tarfile.TarError) as exc:
+        raise VerificationError("could not materialize exact Git archive") from exc
+    finally:
+        archive_path.unlink(missing_ok=True)
+    expected_blobs = {
+        path for path, (mode, _, _) in entries.items() if mode != "160000"
+    }
+    for name in sorted(expected_blobs - seen):
+        mode, _, object_id = entries[name]
+        payload = _git_object(
+            git_dir,
+            ["cat-file", "blob", object_id],
+            home=home,
+        )
+        _require(
+            _git_blob_id(payload, object_id) == object_id,
+            "Git fallback blob drift",
+        )
+        output = destination / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        _require(
+            not output.exists() and not output.is_symlink(),
+            "Git fallback blob collided",
+        )
+        if mode == "120000":
+            try:
+                target = payload.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise VerificationError("Git symlink target is not UTF-8") from exc
+            link_from_root = PurePosixPath(
+                output.relative_to(snapshot_root).as_posix()
+            )
+            normalized_target = posixpath.normpath(
+                (link_from_root.parent / target).as_posix()
+            )
+            _require(
+                not PurePosixPath(target).is_absolute()
+                and normalized_target != ".."
+                and not normalized_target.startswith("../"),
+                "Git fallback symlink escapes the pristine snapshot",
+            )
+            os.symlink(target, output)
+        else:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            descriptor = os.open(
+                output,
+                flags,
+                0o555 if mode == "100755" else 0o444,
+            )
+            try:
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    _require(written > 0, "Git fallback write was incomplete")
+                    offset += written
+            finally:
+                os.close(descriptor)
+        seen.add(name)
+    _require(
+        seen == expected_blobs,
+        "Git archive tracked blob drift: "
+        f"missing={sorted(expected_blobs - seen)[:3]} "
+        f"extra={sorted(seen - expected_blobs)[:3]}",
+    )
+    for path, (mode, _, object_id) in sorted(entries.items()):
+        if mode != "160000":
+            continue
+        actual_submodule = source_worktree / path
+        child_git_dir = _git_directory(actual_submodule)
+        child_destination = destination / path
+        child_destination.mkdir(parents=True, exist_ok=True)
+        _extract_git_commit(
+            source_worktree=actual_submodule,
+            git_dir=child_git_dir,
+            commit=object_id,
+            destination=child_destination,
+            snapshot_root=snapshot_root,
+            temporary_root=temporary_root,
+            home=home,
+        )
+
+
+def create_pristine_idf_snapshot(
+    *,
+    source_root: Path,
+    destination: Path,
+    expected_commit: str,
+    expected_tree: str,
+    temporary_root: Path,
+    home: Path,
+) -> dict[str, int | str]:
+    """Create a read-only ESP-IDF tree solely from exact Git objects."""
+
+    _require(not destination.exists(), "pristine ESP-IDF snapshot already exists")
+    git_dir = _git_directory(source_root)
+    observed_tree = (
+        _git_object(
+            git_dir,
+            ["rev-parse", "--verify", f"{expected_commit}^{{tree}}"],
+            home=home,
+        )
+        .decode("ascii")
+        .strip()
+    )
+    _require(observed_tree == expected_tree, "ESP-IDF exact tree drift")
+    _extract_git_commit(
+        source_worktree=source_root,
+        git_dir=git_dir,
+        commit=expected_commit,
+        destination=destination,
+        snapshot_root=destination,
+        temporary_root=temporary_root,
+        home=home,
+    )
+    for path in sorted(destination.rglob("*"), reverse=True):
+        if path.is_symlink():
+            resolved = path.resolve(strict=True)
+            _require(
+                resolved == destination or destination in resolved.parents,
+                "ESP-IDF snapshot symlink escapes its root",
+            )
+            continue
+        if path.is_dir():
+            path.chmod(0o555)
+        else:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(0o555 if mode & 0o111 else 0o444)
+    destination.chmod(0o555)
+    return _directory_closure(destination)
+
+
 def _validate_closure_symlinks(
     root: Path,
     *,
@@ -1150,6 +1541,7 @@ def prevalidate_runtime_inputs(
     checkout: Path,
     inputs: RuntimeInputs,
     git_home: Path,
+    idf_snapshot_closure: Mapping[str, int | str] | None = None,
 ) -> dict[str, Any]:
     """Validate the complete executable closure before target Python runs."""
 
@@ -1204,37 +1596,10 @@ def prevalidate_runtime_inputs(
         observed, _ = _sha256_regular_file(path, label=label)
         _require(observed == expected, f"{label} SHA256 mismatch")
 
-    idf_commit = (
-        _git(
-            ["-C", str(inputs.idf_root), "rev-parse", "--verify", "HEAD^{commit}"],
-            home=git_home,
-        )
-        .decode("ascii")
-        .strip()
-    )
-    idf_tree = (
-        _git(
-            ["-C", str(inputs.idf_root), "rev-parse", "--verify", "HEAD^{tree}"],
-            home=git_home,
-        )
-        .decode("ascii")
-        .strip()
-    )
-    idf_status = _git(
-        [
-            "-C",
-            str(inputs.idf_root),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-        ],
-        home=git_home,
-    )
     _require(
-        idf_commit == lock["esp_idf"]["commit"]
-        and idf_tree == lock["esp_idf"]["tree"]
-        and not idf_status,
-        "ESP-IDF Git identity drift",
+        idf_snapshot_closure is not None
+        and _directory_closure(inputs.idf_root) == dict(idf_snapshot_closure),
+        "pristine ESP-IDF snapshot closure drift",
     )
 
     for package in lock["packages"]:
@@ -1320,8 +1685,46 @@ def prevalidate_runtime_inputs(
         "schema": "sanhuo.trusted_q7_toolchain_preflight.v1",
         "toolchain_lock_sha256": TRUSTED_TOOLCHAIN_LOCK_SHA256,
         "closures_verified": len(resolved_closures),
+        "idf_snapshot_closure": dict(idf_snapshot_closure),
+        "closures": [
+            {
+                "id": closure["id"],
+                "root": str(root),
+                "closure": {
+                    "closure_sha256": closure["closure_sha256"],
+                    "file_count": closure["file_count"],
+                    "symlink_count": closure["symlink_count"],
+                    "bytes": closure["bytes"],
+                },
+            }
+            for closure, root in resolved_closures
+        ],
+        "toolchain_lock": lock,
         "passed": True,
     }
+
+
+def assert_runtime_inputs_unchanged(
+    inputs: RuntimeInputs,
+    receipt: Mapping[str, Any],
+) -> None:
+    """Recheck every executable closure after all untrusted actions finish."""
+
+    _require(
+        receipt.get("schema") == "sanhuo.trusted_q7_toolchain_preflight.v1"
+        and _directory_closure(inputs.idf_root)
+        == receipt.get("idf_snapshot_closure"),
+        "ESP-IDF snapshot changed during the matrix",
+    )
+    closures = receipt.get("closures")
+    _require(type(closures) is list and bool(closures), "toolchain receipt is invalid")
+    for item in closures:
+        _require(
+            type(item) is dict
+            and set(item) == {"id", "root", "closure"}
+            and _directory_closure(Path(item["root"])) == item["closure"],
+            f"toolchain changed during the matrix: {item.get('id', 'unknown')}",
+        )
 
 
 def _run_trusted(
@@ -1368,32 +1771,6 @@ def _git(
         environment=git_environment(home),
         timeout=timeout,
     ).stdout
-
-
-def verifier_commit(trusted_root: Path, home: Path) -> str:
-    """Return the clean exact commit containing the running verifier."""
-
-    commit = (
-        _git(
-            ["-C", str(trusted_root), "rev-parse", "--verify", "HEAD"],
-            home=home,
-        )
-        .decode("ascii")
-        .strip()
-    )
-    _validate_commit(commit, "verifier")
-    status = _git(
-        [
-            "-C",
-            str(trusted_root),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-        ],
-        home=home,
-    )
-    _require(not status, "trusted verifier worktree is not clean")
-    return commit
 
 
 def create_target_checkout(
@@ -2076,6 +2453,546 @@ def _validate_runtime_manifest_static_binding(
     )
 
 
+def _trusted_source_report(
+    *,
+    checkout: Path,
+    cache_root: Path,
+    phase2: bool,
+) -> dict[str, Any]:
+    """Independently verify every locked source archive and license byte."""
+
+    contract_root = (
+        checkout
+        / "firmware/sanhuo-stackchan-idf/tools/motion_firmware_matrix/contracts"
+    )
+    lock_name = "phase2-source-lock.v1.json" if phase2 else "source-lock.v1.json"
+    lock_payload = _read_regular_file_without_following(
+        contract_root / lock_name,
+        max_bytes=1024 * 1024,
+        label=lock_name,
+    )
+    lock = load_closed_json(
+        lock_payload,
+        label=lock_name,
+        max_bytes=1024 * 1024,
+    )
+    expected_root_fields = (
+        {
+            "schema",
+            "generated_at",
+            "base_source_lock_sha256",
+            "network_during_build",
+            "sources",
+        }
+        if phase2
+        else {
+            "schema",
+            "generated_at",
+            "network_during_build",
+            "sources",
+            "excluded_references",
+        }
+    )
+    _require(
+        set(lock) == expected_root_fields
+        and lock["schema"]
+        == (
+            "sanhuo.motion_phase2_source_lock.v1"
+            if phase2
+            else "sanhuo.motion_source_lock.v1"
+        )
+        and lock["network_during_build"] is False
+        and type(lock["sources"]) is list
+        and len(lock["sources"]) == (2 if phase2 else 5),
+        "trusted source lock is invalid",
+    )
+    if phase2:
+        base_payload = _read_regular_file_without_following(
+            contract_root / "source-lock.v1.json",
+            max_bytes=1024 * 1024,
+            label="base source lock",
+        )
+        _require(
+            lock["base_source_lock_sha256"]
+            == hashlib.sha256(base_payload).hexdigest(),
+            "Phase 2 source lock does not bind the base lock",
+        )
+    reports: list[dict[str, Any]] = []
+    observed_ids: set[str] = set()
+    for source in lock["sources"]:
+        required_fields = (
+            {
+                "id",
+                "repository",
+                "tag",
+                "commit",
+                "cache_file",
+                "archive_sha256",
+                "archive_root",
+                "license_files",
+                "required_files",
+                "network_during_build",
+            }
+            if phase2
+            else {
+                "id",
+                "repository",
+                "tag",
+                "commit",
+                "cache_file",
+                "archive_sha256",
+                "archive_root",
+                "license_files",
+                "allowed_files",
+                "forbidden_files",
+                "network_during_build",
+            }
+        )
+        _require(
+            type(source) is dict
+            and set(source) == required_fields
+            and type(source["id"]) is str
+            and bool(source["id"])
+            and source["id"] not in observed_ids
+            and type(source["cache_file"]) is str
+            and PurePosixPath(source["cache_file"]).name == source["cache_file"]
+            and type(source["archive_root"]) is str
+            and bool(source["archive_root"])
+            and source["network_during_build"] is False,
+            "trusted source entry is invalid",
+        )
+        observed_ids.add(source["id"])
+        _validate_sha256(source["archive_sha256"], "source archive")
+        _validate_commit(source["commit"], "source")
+        archive_path = (cache_root / source["cache_file"]).resolve()
+        _require(
+            archive_path.parent == cache_root.resolve()
+            and archive_path.is_file()
+            and not archive_path.is_symlink(),
+            "trusted source archive path is invalid",
+        )
+        archive_sha, archive_bytes = _sha256_regular_file(
+            archive_path,
+            label=f"{source['id']} archive",
+            max_bytes=512 * 1024 * 1024,
+        )
+        _require(
+            archive_sha == source["archive_sha256"],
+            f"trusted source archive drift: {source['id']}",
+        )
+        names: set[str] = set()
+        license_payloads: dict[str, bytes] = {}
+        expanded_bytes = 0
+        licenses = {
+            f"{source['archive_root']}/{item['path']}": item
+            for item in source["license_files"]
+        }
+        try:
+            with tarfile.open(archive_path, mode="r:*") as archive:
+                members = archive.getmembers()
+                _require(
+                    len(members) <= 200_000,
+                    "trusted source archive has too many entries",
+                )
+                for member in members:
+                    path = PurePosixPath(member.name)
+                    _require(
+                        not path.is_absolute()
+                        and ".." not in path.parts
+                        and not member.issym()
+                        and not member.islnk(),
+                        "trusted source archive has an unsafe entry",
+                    )
+                    if not member.isfile():
+                        continue
+                    expanded_bytes += member.size
+                    _require(
+                        expanded_bytes <= 2 * 1024 * 1024 * 1024,
+                        "trusted source archive expands beyond its limit",
+                    )
+                    name = path.as_posix()
+                    names.add(name)
+                    if name in licenses:
+                        stream = archive.extractfile(member)
+                        _require(stream is not None, "license cannot be read")
+                        license_payloads[name] = stream.read()
+        except (OSError, tarfile.TarError) as exc:
+            raise VerificationError("trusted source archive is invalid") from exc
+        root_prefix = f"{source['archive_root']}/"
+        relative_names = {
+            name[len(root_prefix) :]
+            for name in names
+            if name.startswith(root_prefix)
+        }
+        _require(bool(relative_names), "trusted source archive root drift")
+        for archive_name, license_entry in licenses.items():
+            _require(
+                type(license_entry) is dict
+                and set(license_entry) == {"path", "sha256", "spdx"}
+                and archive_name in license_payloads
+                and hashlib.sha256(license_payloads[archive_name]).hexdigest()
+                == license_entry["sha256"],
+                "trusted source license drift",
+            )
+        if phase2:
+            _require(
+                all(path in relative_names for path in source["required_files"]),
+                "required Phase 2 source file is missing",
+            )
+        else:
+            _require(
+                all(
+                    any(fnmatch.fnmatchcase(name, pattern) for name in relative_names)
+                    for pattern in source["allowed_files"]
+                )
+                and all(
+                    any(fnmatch.fnmatchcase(name, pattern) for name in relative_names)
+                    for pattern in source["forbidden_files"]
+                ),
+                "base source allow/forbid evidence drift",
+            )
+        report = {
+            "id": source["id"],
+            "archive_sha256": archive_sha,
+            "archive_bytes": archive_bytes,
+            "expanded_bytes": expanded_bytes,
+        }
+        if not phase2:
+            report["license_files_verified"] = len(licenses)
+        reports.append(report)
+    return {
+        "schema": (
+            "sanhuo.motion_phase2_source_report.v1"
+            if phase2
+            else "sanhuo.motion_source_verification.v1"
+        ),
+        "passed": True,
+        **({"offline": True} if not phase2 else {}),
+        "network_used": False,
+        "verified_sources": len(reports),
+        "sources": reports,
+    }
+
+
+def _trusted_toolchain_q0_report(preflight: Mapping[str, Any]) -> dict[str, Any]:
+    lock = preflight["toolchain_lock"]
+    return {
+        "schema": "sanhuo.motion_phase2_toolchain_report.v1",
+        "passed": True,
+        "network_used": False,
+        "platformio_core": lock["platformio_core"]["version"],
+        "packages_verified": len(lock["packages"]),
+        "packages": [
+            {
+                key: value
+                for key, value in package.items()
+                if key != "relative_metadata_path"
+            }
+            for package in lock["packages"]
+        ],
+        "esp_idf": {
+            key: value
+            for key, value in lock["esp_idf"].items()
+            if key != "compiler_relative_path"
+        },
+        "host_test_tools_verified": True,
+        "closures_verified": len(lock["closures"]),
+        "closures": [
+            {
+                key: value
+                for key, value in closure.items()
+                if key not in {"base", "path"}
+            }
+            for closure in lock["closures"]
+        ],
+    }
+
+
+def _validate_pytest_evidence(
+    value: Any,
+    *,
+    expected_tests: int,
+    extra_fields: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    fields = {
+        "paths",
+        "returncode",
+        "expected_tests",
+        "counts",
+        "python_executable_sha256",
+        "normalized_stdout_sha256",
+        "summary",
+    }
+    count_fields = {
+        "collected",
+        "executed",
+        "passed",
+        "failed",
+        "errors",
+        "skipped",
+        "xfailed",
+        "xpassed",
+    }
+    _require(
+        type(value) is dict
+        and set(value) == fields | set(extra_fields)
+        and value["returncode"] == 0
+        and value["expected_tests"] == expected_tests
+        and type(value["paths"]) is list
+        and bool(value["paths"])
+        and all(type(path) is str and bool(path) for path in value["paths"])
+        and type(value["counts"]) is dict
+        and set(value["counts"]) == count_fields
+        and value["counts"]["collected"] == expected_tests
+        and value["counts"]["executed"] == expected_tests
+        and value["counts"]["passed"] == expected_tests
+        and all(
+            value["counts"][field] == 0
+            for field in ("failed", "errors", "skipped", "xfailed", "xpassed")
+        )
+        and type(value["summary"]) is str
+        and bool(value["summary"]),
+        "trusted pytest evidence is invalid",
+    )
+    _validate_sha256(value["python_executable_sha256"], "pytest Python")
+    _validate_sha256(value["normalized_stdout_sha256"], "pytest output")
+    return {
+        "tests": expected_tests,
+        "paths": list(value["paths"]),
+    }
+
+
+def _validate_q3_properties(value: Any) -> dict[str, Any]:
+    _require(
+        type(value) is dict
+        and value.get("schema") == "sanhuo.motion_phase2_q3_properties.v1"
+        and value.get("cases") == 10_000
+        and value.get("p2_mapping_checks") == 10_000
+        and value.get("transport_candidate_checks") == 30_000
+        and value.get("deterministic") is True
+        and value.get("hardware_used") is False
+        and value.get("maximum_t1_hold_error_raw") <= 2
+        and value.get("maximum_t2_proxy_error_raw") <= 2
+        and value.get("maximum_t2_segment_ms") <= 400
+        and value.get("raw_envelope") == {
+            "pan": [360, 560],
+            "tilt": [620, 754],
+        },
+        "Q3 property evidence is invalid",
+    )
+    _validate_sha256(value["trace_sha256"], "Q3 property trace")
+    _validate_self_hash(value, label="Q3 property")
+    return {
+        "cases": 10_000,
+        "transport_candidate_checks": 30_000,
+        "deterministic": True,
+    }
+
+
+def _validate_gate_semantics(
+    *,
+    candidate: str,
+    gate: str,
+    evidence: Mapping[str, Any],
+    build: Mapping[str, Any],
+    trusted_elf: Mapping[str, Any],
+    trusted_q0: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Independently validate the safety-relevant meaning of one raw gate."""
+
+    if gate == "Q0":
+        _require(
+            evidence == trusted_q0,
+            f"{candidate} Q0 raw source/toolchain evidence drift",
+        )
+        return {
+            "base_sources": 5,
+            "phase2_sources": 2,
+            "toolchain_closures": 14,
+            "network": False,
+        }
+    if gate == "Q1":
+        contract = evidence.get("contract")
+        behavior = _validate_pytest_evidence(
+            evidence.get("behavior_evidence"),
+            expected_tests=11,
+        )
+        _require(
+            type(contract) is dict
+            and contract.get("hardware_authorized") is False
+            and contract.get("hardware_commands") == []
+            and contract.get("failure_contract", {}).get(
+                "performance_error_safe_center_attempts"
+            )
+            == 1
+            and contract.get("failure_contract", {}).get(
+                "startup_failure_safe_center_attempts"
+            )
+            == 0
+            and contract.get("failure_contract", {}).get(
+                "startup_failure_bus_commands"
+            )
+            == 0
+            and evidence.get("elf_sha256") == trusted_elf["elf_sha256"]
+            and evidence.get("verified_elf_capabilities")
+            == trusted_elf["firmware_capabilities"]
+            and evidence.get("verified_linked_symbols")
+            == contract.get("required_linked_symbols"),
+            f"{candidate} Q1 adapter semantics drift",
+        )
+        return {
+            **behavior,
+            "startup_failure_bus_commands": 0,
+            "performance_error_safe_center_attempts": 1,
+        }
+    if gate == "Q2":
+        tests = _validate_pytest_evidence(
+            evidence.get("tests"),
+            expected_tests=35,
+        )
+        _require(
+            evidence.get("compiler_contract")
+            == "C++17 warnings-as-errors ASan UBSan"
+            and evidence.get("firmware_compiler_warning_counts") == [0, 0]
+            and evidence.get("firmware_capabilities")
+            == trusted_elf["firmware_capabilities"]
+            and evidence.get("build_report_sha256") == build["report_sha256"],
+            f"{candidate} Q2 compile semantics drift",
+        )
+        return {**tests, "firmware_warning_counts": [0, 0]}
+    if gate == "Q3":
+        properties = _validate_q3_properties(evidence.get("randomized_properties"))
+        if candidate == "MF-P2":
+            _require(
+                evidence.get("public_target_count", 0) > 0
+                and evidence.get("system_duration_ms") == 60_000
+                and evidence.get("first", {}).get("at_ms") == 0
+                and evidence.get("last")
+                == {"at_ms": 60000, "yaw_tenths": 0, "pitch_tenths": 0},
+                "MF-P2 Q3 public target semantics drift",
+            )
+        else:
+            _validate_pytest_evidence(
+                evidence.get("property_test"),
+                expected_tests=5,
+            )
+            _validate_sha256(evidence.get("schedule_sha256"), "Q3 schedule")
+            _require(
+                type(evidence.get("metrics")) is dict
+                and type(evidence.get("parameters")) is dict,
+                f"{candidate} Q3 schedule semantics drift",
+            )
+        return properties
+    if gate == "Q4":
+        tests = _validate_pytest_evidence(
+            evidence,
+            expected_tests=21,
+            extra_fields=frozenset(
+                {
+                    "shared_executor_core_sha256",
+                    "p2_official_ack_contract_sha256",
+                    "candidate_transactions",
+                }
+            ),
+        )
+        expected_transactions: Any = {
+            "MF-P2": "official spring runtime writes; count is runtime-derived",
+            "MF-T0": 1298,
+            "MF-T1": 1088,
+            "MF-T2": 613,
+        }[candidate]
+        _require(
+            evidence.get("candidate_transactions") == expected_transactions,
+            f"{candidate} Q4 transaction evidence drift",
+        )
+        _validate_sha256(
+            evidence.get("shared_executor_core_sha256"),
+            "Q4 executor core",
+        )
+        _validate_sha256(
+            evidence.get("p2_official_ack_contract_sha256"),
+            "Q4 P2 ACK contract",
+        )
+        return {
+            **tests,
+            "startup_failure_scenarios": 2,
+            "performance_error_safe_center_attempts": 1,
+        }
+    if gate == "Q5":
+        _require(
+            evidence.get("schema") == "sanhuo.motion_phase2_system_matrix.v1"
+            and evidence.get("candidate_id") == candidate
+            and evidence.get("virtual_clock_duration_ms") == 60_000
+            and evidence.get("seeds") == 100
+            and evidence.get("repeat") == 2
+            and evidence.get("runs") == 200
+            and evidence.get("events_per_run", 0) > 0
+            and evidence.get("deterministic") is True
+            and evidence.get("final_centered") is True
+            and evidence.get("jitter_ms") == [0, 5]
+            and evidence.get("sparse_tick_delay_ms") == 20
+            and evidence.get("blocking_delays_ms") == [40, 100]
+            and evidence.get("feedback_collision_safe_stops") == 100
+            and evidence.get("post_failure_performance_writes") == 0
+            and evidence.get("automatic_retry") is False
+            and evidence.get("hardware_used") is False,
+            f"{candidate} Q5 system semantics drift",
+        )
+        if candidate == "MF-P2":
+            _validate_pytest_evidence(
+                evidence.get("real_failure_control_flow"),
+                expected_tests=11,
+            )
+        return {
+            "seeds": 100,
+            "repeat": 2,
+            "runs": 200,
+            "feedback_collision_safe_stops": 100,
+            "post_failure_performance_writes": 0,
+        }
+    if gate == "Q6":
+        reproduction = build.get("reproducibility")
+        _require(type(reproduction) is dict, f"{candidate} build reproduction missing")
+        expected = {
+            "build_report_sha256": build["report_sha256"],
+            "clean_builds": reproduction["clean_builds"],
+            "reproducible": reproduction["reproducible"],
+            "application_sha256": reproduction["application_sha256"],
+            "elf_semantic_sha256": reproduction["elf_semantic_sha256"],
+            "source_closure_sha256": reproduction["source_closure_sha256"],
+            "source_diff_audit": reproduction["source_diff_audit"],
+            "schedule_sha256": reproduction["schedule_sha256"],
+            "firmware_capabilities": reproduction["firmware_capabilities"],
+            "compiler_warning_count": reproduction["compiler_warning_count"],
+            "application_bytes": reproduction["application_bytes"],
+            "static_ram_bytes": reproduction["static_ram_bytes"],
+            "configured_task_stacks_bytes": reproduction[
+                "configured_task_stacks_bytes"
+            ],
+            "runtime_stack_high_water_mark_bytes": reproduction[
+                "runtime_stack_high_water_mark_bytes"
+            ],
+            "hot_path_heap_allocations": reproduction[
+                "hot_path_heap_allocations"
+            ],
+        }
+        _require(
+            dict(evidence) == expected
+            and evidence["clean_builds"] == 2
+            and evidence["reproducible"] is True
+            and evidence["compiler_warning_count"] == 0
+            and evidence["hot_path_heap_allocations"] == 0,
+            f"{candidate} Q6 reproduction semantics drift",
+        )
+        return {
+            "clean_builds": 2,
+            "reproducible": True,
+            "compiler_warning_count": 0,
+            "hot_path_heap_allocations": 0,
+        }
+    raise VerificationError("unrecognized gate")
+
+
 def _validate_precheck_artifacts(
     *,
     candidate: str,
@@ -2083,7 +3000,10 @@ def _validate_precheck_artifacts(
     summary: Mapping[str, Any],
     audit_gates: Mapping[str, Any],
     manifest_gates: Mapping[str, Any],
-) -> None:
+    build: Mapping[str, Any],
+    trusted_elf: Mapping[str, Any],
+    trusted_q0: Mapping[str, Any],
+) -> dict[str, Any]:
     """Validate every Q0-Q6 report and the fail-closed precheck summary directly."""
 
     _require(
@@ -2091,6 +3011,7 @@ def _validate_precheck_artifacts(
         f"{candidate} precheck gate set drift",
     )
     expected_gate_results: dict[str, dict[str, Any]] = {}
+    semantic_summary: dict[str, Any] = {}
     for gate in GATES:
         report = gate_reports[gate]
         _require(
@@ -2109,6 +3030,19 @@ def _validate_precheck_artifacts(
         report_evidence_sha256 = _validate_sha256(
             report["evidence_sha256"],
             f"{candidate} {gate} report evidence",
+        )
+        _require(
+            type(report["evidence"]) is dict
+            and sha256_json(report["evidence"]) == report_evidence_sha256,
+            f"{candidate} {gate} raw evidence hash drift",
+        )
+        semantic_summary[gate] = _validate_gate_semantics(
+            candidate=candidate,
+            gate=gate,
+            evidence=report["evidence"],
+            build=build,
+            trusted_elf=trusted_elf,
+            trusted_q0=trusted_q0,
         )
         manifest_gate = manifest_gates.get(gate)
         _require(
@@ -2151,6 +3085,7 @@ def _validate_precheck_artifacts(
         and summary["hardware_commands"] == [],
         f"{candidate} qualification summary is invalid",
     )
+    return semantic_summary
 
 
 def collect_matrix_evidence(
@@ -2159,6 +3094,8 @@ def collect_matrix_evidence(
     *,
     artifact_root: Path | None = None,
     binary_root: Path | None = None,
+    source_cache_root: Path,
+    preflight: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     """Collect and cross-check the fixed public evidence after the isolated run."""
 
@@ -2175,6 +3112,19 @@ def collect_matrix_evidence(
         type(elf_evidence) is dict and set(elf_evidence) == set(CANDIDATES),
         "trusted ELF evidence candidates drift",
     )
+    trusted_q0 = {
+        "base": _trusted_source_report(
+            checkout=checkout,
+            cache_root=source_cache_root,
+            phase2=False,
+        ),
+        "phase2": _trusted_source_report(
+            checkout=checkout,
+            cache_root=source_cache_root,
+            phase2=True,
+        ),
+        "toolchain": _trusted_toolchain_q0_report(preflight),
+    }
     matrix: dict[str, dict[str, Any]] = {}
     for candidate in CANDIDATES:
         audit_path = artifact_root / candidate / "audit-report.json"
@@ -2299,12 +3249,15 @@ def collect_matrix_evidence(
             type(manifest_gates) is dict,
             f"{candidate} manifest gate evidence drift",
         )
-        _validate_precheck_artifacts(
+        gate_semantic_summary = _validate_precheck_artifacts(
             candidate=candidate,
             gate_reports=gate_reports,
             summary=summary,
             audit_gates=gates,
             manifest_gates=manifest_gates,
+            build=build,
+            trusted_elf=trusted_elf,
+            trusted_q0=trusted_q0,
         )
         audit_file_sha256, _ = _sha256_regular_file(
             audit_path,
@@ -2330,6 +3283,7 @@ def collect_matrix_evidence(
                 )
                 for gate in GATES
             },
+            "gate_semantic_summary": gate_semantic_summary,
         }
     return _validate_evidence(matrix)
 
@@ -2500,12 +3454,14 @@ def load_review_bundle(
     *,
     target_commit: str,
     verifier_commit_sha: str,
+    snapshots: Mapping[str, ReportSnapshot] | None = None,
 ) -> dict[str, Any]:
-    payload = _read_regular_file_without_following(
-        review_directory / "prompt-bundle.json",
-        max_bytes=MAX_ARTIFACT_JSON_BYTES,
-        label="review prompt bundle",
+    snapshots = (
+        dict(snapshots)
+        if snapshots is not None
+        else snapshot_prompt_artifacts(review_directory)
     )
+    payload = snapshots["prompt-bundle.json"].payload
     bundle = load_closed_json(
         payload,
         label="review prompt bundle",
@@ -2539,7 +3495,59 @@ def load_review_bundle(
         type(bundle["prompts"]) is dict and set(bundle["prompts"]) == set(ROLES),
         "review prompt bundle roles drift",
     )
+    expected = build_review_prompt_bundle(
+        target_commit=target_commit,
+        verifier_commit_sha=verifier_commit_sha,
+        review_session_nonce=bundle["review_session_nonce"],
+        evidence=bundle["matrix_evidence"],
+    )
+    _require(bundle == expected, "review prompt bundle content drift")
+    for role in ROLES:
+        _require(
+            snapshots[f"{role}-prompt.md"].payload
+            == _render_prompt(expected["prompts"][role]).encode("utf-8"),
+            f"{role} rendered prompt bytes drift",
+        )
     return bundle
+
+
+def snapshot_prompt_artifacts(
+    review_directory: Path,
+) -> dict[str, ReportSnapshot]:
+    snapshots: dict[str, ReportSnapshot] = {}
+    for filename in (
+        "prompt-bundle.json",
+        "primary-prompt.md",
+        "verifier-prompt.md",
+    ):
+        payload = _read_regular_file_without_following(
+            review_directory / filename,
+            max_bytes=MAX_ARTIFACT_JSON_BYTES,
+            label=filename,
+        )
+        snapshots[filename] = ReportSnapshot(
+            role=filename,
+            payload=payload,
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+    return snapshots
+
+
+def assert_prompt_snapshots_unchanged(
+    review_directory: Path,
+    snapshots: Mapping[str, ReportSnapshot],
+) -> None:
+    for filename, snapshot in snapshots.items():
+        payload = _read_regular_file_without_following(
+            review_directory / filename,
+            max_bytes=MAX_ARTIFACT_JSON_BYTES,
+            label=filename,
+        )
+        _require(
+            hashlib.sha256(payload).hexdigest() == snapshot.sha256
+            and payload == snapshot.payload,
+            f"{filename} changed after it was captured",
+        )
 
 
 def write_new_result(output: Path, result: Mapping[str, Any]) -> None:
@@ -2566,7 +3574,7 @@ def _execute_fresh_matrix(
     home: Path,
     trusted_root: Path,
 ) -> tuple[dict[str, dict[str, Any]], set[str]]:
-    inputs = resolve_runtime_inputs(tool_workspace, home)
+    source_inputs = resolve_runtime_inputs(tool_workspace, home)
     with tempfile.TemporaryDirectory(prefix="sanhuo-trusted-q7-") as temporary:
         root = Path(temporary)
         checkout = root / "checkout"
@@ -2581,10 +3589,36 @@ def _execute_fresh_matrix(
             git_dir=git_dir,
             home=git_home,
         )
-        prevalidate_runtime_inputs(
+        lock_payload = _read_regular_file_without_following(
+            checkout / TOOLCHAIN_LOCK_RELATIVE_PATH,
+            max_bytes=1024 * 1024,
+            label="trusted toolchain lock",
+        )
+        _require(
+            hashlib.sha256(lock_payload).hexdigest()
+            == TRUSTED_TOOLCHAIN_LOCK_SHA256,
+            "target toolchain lock is not pinned by this verifier",
+        )
+        lock = load_closed_json(
+            lock_payload,
+            label="trusted toolchain lock",
+            max_bytes=1024 * 1024,
+        )
+        pristine_idf = root / "pristine-idf"
+        idf_snapshot_closure = create_pristine_idf_snapshot(
+            source_root=source_inputs.idf_root,
+            destination=pristine_idf,
+            expected_commit=lock["esp_idf"]["commit"],
+            expected_tree=lock["esp_idf"]["tree"],
+            temporary_root=root,
+            home=git_home,
+        )
+        inputs = replace(source_inputs, idf_root=pristine_idf)
+        preflight = prevalidate_runtime_inputs(
             checkout=checkout,
             inputs=inputs,
             git_home=git_home,
+            idf_snapshot_closure=idf_snapshot_closure,
         )
         isolated = run_isolated_matrix(
             checkout=checkout,
@@ -2593,6 +3627,7 @@ def _execute_fresh_matrix(
             inputs=inputs,
             trusted_root=trusted_root,
         )
+        assert_runtime_inputs_unchanged(inputs, preflight)
         assert_target_tracked_files_unchanged(
             target_commit=target_commit,
             checkout=checkout,
@@ -2617,6 +3652,8 @@ def _execute_fresh_matrix(
                 / f"sealed-{len(container_actions()) - 1:02d}"
                 / "output/binaries"
             ),
+            source_cache_root=inputs.cache_root / "sources",
+            preflight=preflight,
         )
     return evidence, tracked_files
 
@@ -2624,12 +3661,13 @@ def _execute_fresh_matrix(
 def prepare_reviews(
     *,
     target_commit: str,
+    verifier_commit_sha: str,
     tool_workspace: Path,
     output_directory: Path,
 ) -> None:
     trusted_root = Path(__file__).resolve().parent
     home = Path.home()
-    verifier_sha = verifier_commit(trusted_root, home)
+    verifier_sha = verifier_commit_sha
     inputs = resolve_runtime_inputs(tool_workspace, home)
     forbidden_roots = (
         tool_workspace.resolve(),
@@ -2666,6 +3704,7 @@ def prepare_reviews(
 def verify_reviews(
     *,
     target_commit: str,
+    verifier_commit_sha: str,
     tool_workspace: Path,
     review_directory: Path,
     output: Path,
@@ -2674,7 +3713,7 @@ def verify_reviews(
 
     trusted_root = Path(__file__).resolve().parent
     home = Path.home()
-    verifier_sha = verifier_commit(trusted_root, home)
+    verifier_sha = verifier_commit_sha
     inputs = resolve_runtime_inputs(tool_workspace, home)
     forbidden_roots = (
         tool_workspace.resolve(),
@@ -2692,10 +3731,12 @@ def verify_reviews(
         forbidden_roots=forbidden_roots,
         must_exist=True,
     )
+    prompt_snapshots = snapshot_prompt_artifacts(review_directory)
     bundle = load_review_bundle(
         review_directory,
         target_commit=target_commit,
         verifier_commit_sha=verifier_sha,
+        snapshots=prompt_snapshots,
     )
     review_session_nonce = bundle["review_session_nonce"]
     snapshots = snapshot_reports(review_directory)
@@ -2731,6 +3772,7 @@ def verify_reviews(
         reports=reports,
         tracked_files=tracked_files,
     )
+    assert_prompt_snapshots_unchanged(review_directory, prompt_snapshots)
     assert_report_snapshots_unchanged(review_directory, snapshots)
     write_new_result(output, result)
 
@@ -2739,6 +3781,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Trusted offline Q7 verifier for the four Sanhuo candidates"
     )
+    parser.add_argument("--verifier-commit", required=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("prepare", "verify"):
         subparser = subparsers.add_parser(command)
@@ -2753,17 +3796,20 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    require_trusted_launcher()
     arguments = _parser().parse_args(argv)
+    trusted_root = Path(__file__).resolve().parent
+    require_trusted_launcher(trusted_root, arguments.verifier_commit)
     if arguments.command == "prepare":
         prepare_reviews(
             target_commit=arguments.target_commit,
+            verifier_commit_sha=arguments.verifier_commit,
             tool_workspace=arguments.tool_workspace,
             output_directory=arguments.output_directory,
         )
     else:
         verify_reviews(
             target_commit=arguments.target_commit,
+            verifier_commit_sha=arguments.verifier_commit,
             tool_workspace=arguments.tool_workspace,
             review_directory=arguments.review_directory,
             output=arguments.output,

@@ -34,22 +34,26 @@
 (allow ipc-posix-shm)
 (allow file-read-metadata)
 
-; System runtimes are readable. User homes, volumes, temporary state and device
-; trees are denied again below, with only explicit trusted roots reopened.
+; macOS's system Python resolves a small set of private virtual/runtime paths
+; before it can execute user code. Start from the OS-readable namespace, close
+; every user/data-bearing top-level tree, and then reopen only the exact
+; prevalidated roots required by this action. This keeps the system resolver
+; working without exposing adjacent /Applications, /Library, /opt, /private,
+; /Users or removable/network volumes.
 (allow file-read*)
 (deny file-read*
+  (subpath "/Applications")
+  (subpath "/Library")
+  (subpath "/Network")
   (subpath "/Users")
   (subpath "/Volumes")
-  (subpath "/Network")
-  (subpath "/private/tmp")
-  (subpath "/dev"))
-(deny file-read*
-  (require-all
-    (subpath "/private/var/folders")
-    (require-not (subpath (param "CHECKOUT")))
-    (require-not (subpath (param "GIT_DIR")))
-    (require-not (subpath (param "RUNTIME_HOME")))))
+  (subpath "/cores")
+  (subpath "/dev")
+  (subpath "/home")
+  (subpath "/opt")
+  (subpath "/private"))
 (allow file-read*
+  (subpath (param "XCODE_ROOT"))
   (subpath (param "CHECKOUT"))
   (subpath (param "GIT_DIR"))
   (subpath (param "CACHE"))
@@ -61,6 +65,13 @@
   (subpath (param "IDF_ROOT"))
   (subpath (param "ESPRESSIF_ROOT"))
   (subpath (param "TEST_USER_SITE_ROOT"))
+  (subpath (param "TEST_GLOBAL_SITE_ROOT"))
+  (subpath (param "EXEC_HOMEBREW_PYTHON"))
+  (subpath (param "EXEC_HOMEBREW_CMAKE"))
+  (subpath (param "EXEC_HOMEBREW_NINJA"))
+  (subpath (param "EXEC_IDF_PYTHON"))
+  (subpath (param "EXEC_IDF_XTENSA"))
+  (subpath "/private/var/db/timezone")
   (literal "/dev/null")
   (literal "/dev/random")
   (literal "/dev/urandom"))
