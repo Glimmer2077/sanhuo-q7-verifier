@@ -19,8 +19,13 @@
   (subpath "/Volumes")
   (subpath "/Network")
   (subpath "/private/tmp")
-  (subpath "/private/var/folders")
   (subpath "/dev"))
+(deny file-read*
+  (require-all
+    (subpath "/private/var/folders")
+    (require-not (subpath (param "CHECKOUT")))
+    (require-not (subpath (param "GIT_DIR")))
+    (require-not (subpath (param "RUNTIME_HOME")))))
 (allow file-read*
   (subpath (param "CHECKOUT"))
   (subpath (param "GIT_DIR"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -217,6 +218,10 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn("(deny default)", profile)
         self.assertNotIn("(allow network", profile)
         self.assertIn('(deny file-read*\n  (subpath "/Users")', profile)
+        self.assertIn(
+            '(require-not (subpath (param "RUNTIME_HOME")))',
+            profile,
+        )
         self.assertIn('(subpath "/dev"))', profile)
         self.assertNotIn('(allow file-read*\n  (subpath "/dev")', profile)
         self.assertIn('(subpath (param "GIT_DIR"))', profile)
@@ -227,6 +232,82 @@ class TrustedVerifierTests(unittest.TestCase):
         )
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/dev/urandom")', profile)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin"
+        and Path("/usr/bin/sandbox-exec").is_file(),
+        "requires the macOS sandbox used by the verifier",
+    )
+    def test_sandbox_runtime_home_cleanup_keeps_sibling_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            secret = root / "operator-secret.txt"
+            secret.write_text("must stay unreadable", encoding="utf-8")
+            paths = {
+                name: root / name
+                for name in ("checkout", "git", "cache", "runtime")
+            }
+            for path in paths.values():
+                path.mkdir()
+            (paths["runtime"] / "tmp").mkdir()
+            profile = (Path(__file__).parents[1] / "sanhuo-q7.sb").resolve()
+            python_root = Path(sys.executable).resolve().parent.parent
+            command = [
+                "/usr/bin/sandbox-exec",
+                "-f",
+                str(profile),
+                "-D",
+                f"CHECKOUT={paths['checkout']}",
+                "-D",
+                f"GIT_DIR={paths['git']}",
+                "-D",
+                f"CACHE={paths['cache']}",
+                "-D",
+                f"TRUSTED_ROOT={profile.parent}",
+                "-D",
+                f"RUNTIME_HOME={paths['runtime']}",
+                "-D",
+                f"PYTHON_ROOT={python_root}",
+                "-D",
+                f"PLATFORMIO_ROOT={paths['cache']}",
+                "-D",
+                f"IDF_ROOT={paths['cache']}",
+                "-D",
+                f"ESPRESSIF_ROOT={paths['cache']}",
+                "-D",
+                f"TEST_USER_SITE_ROOT={paths['cache']}",
+                "/usr/bin/env",
+                "-i",
+                f"TMPDIR={paths['runtime'] / 'tmp'}",
+                str(Path(sys.executable).resolve()),
+                "-c",
+                (
+                    "from pathlib import Path\n"
+                    "import tempfile\n"
+                    "handle=tempfile.TemporaryDirectory(prefix='sandbox-test-')\n"
+                    f"secret=Path({json.dumps(str(secret))})\n"
+                    "try:\n"
+                    "    secret.read_text(encoding='utf-8')\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('sibling temp file became readable')\n"
+                    "handle.cleanup()\n"
+                ),
+            ]
+            result = subprocess.run(
+                command,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                result.stderr.decode("utf-8", errors="replace"),
+            )
 
     def test_only_the_four_fixed_candidates_are_run(self) -> None:
         self.assertEqual(
