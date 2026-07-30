@@ -221,6 +221,9 @@ def _closed_environment() -> dict[str, str]:
         "SANHUO_MATRIX_PLATFORMIO_EXECUTABLE": os.environ[
             "SANHUO_Q7_PLATFORMIO_EXECUTABLE"
         ],
+        "SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT": (
+            f"{runtime_home}/platformio-core"
+        ),
         "SANHUO_MATRIX_IDF_ROOT": idf_root,
         "SANHUO_MATRIX_ESPRESSIF_ROOT": espressif_root,
         "SANHUO_MATRIX_TEST_PYTHON": test_python,
@@ -236,6 +239,7 @@ def prepare_runtime_layout() -> None:
     runtime_home = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
     (runtime_home / "output/artifacts").mkdir(parents=True)
     (runtime_home / "output/binaries").mkdir(parents=True)
+    (runtime_home / "platformio-core").mkdir()
 
 
 def _process_group_still_exists(process_group: int) -> bool:

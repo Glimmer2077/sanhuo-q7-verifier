@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest import mock
 
 import isolated_driver
 
@@ -41,6 +43,29 @@ class IsolatedDriverTests(unittest.TestCase):
                 "MF-T0",
                 {"uart_write_bytes", "executeCandidate()"},
             )
+
+    def test_driver_puts_platformio_state_inside_runtime_home(self) -> None:
+        environment = {
+            "SANHUO_Q7_RUNTIME_HOME": "/tmp/runtime",
+            "SANHUO_Q7_CHECKOUT": "/tmp/checkout",
+            "SANHUO_Q7_PLATFORMIO_ROOT": "/tmp/locked-platformio",
+            "SANHUO_Q7_IDF_ROOT": "/tmp/idf",
+            "SANHUO_Q7_ESPRESSIF_ROOT": "/tmp/espressif",
+            "SANHUO_Q7_TEST_PYTHON": "/tmp/python",
+            "SANHUO_Q7_TEST_USER_SITE_ROOT": "/tmp/site",
+            "SANHUO_Q7_HOMEBREW_ROOT": "/opt/homebrew",
+            "SANHUO_Q7_HOST_CXX": "/usr/bin/c++",
+            "SANHUO_Q7_CACHE": "/tmp/cache",
+            "SANHUO_Q7_PLATFORMIO_EXECUTABLE": "/tmp/platformio",
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=True):
+            closed = isolated_driver._closed_environment()
+
+        self.assertEqual(
+            closed["SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT"],
+            "/tmp/runtime/platformio-core",
+        )
 
 
 if __name__ == "__main__":
