@@ -806,6 +806,13 @@ def sandbox_command(
         "-D",
         f"XCODE_ROOT={xcode_root}",
         "-D",
+        (
+            "XCODE_SHARED_FRAMEWORKS="
+            "/Applications/Xcode.app/Contents/SharedFrameworks"
+        ),
+        "-D",
+        "XCODE_FRAMEWORKS=/Applications/Xcode.app/Contents/Frameworks",
+        "-D",
         f"PYTHON_ROOT={python_root}",
         "-D",
         f"PLATFORMIO_ROOT={platformio_root}",

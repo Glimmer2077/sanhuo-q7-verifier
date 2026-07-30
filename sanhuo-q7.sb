@@ -53,6 +53,8 @@
   (subpath "/opt")
   (subpath "/private"))
 (allow file-read*
+  (subpath (param "XCODE_FRAMEWORKS"))
+  (subpath (param "XCODE_SHARED_FRAMEWORKS"))
   (subpath (param "XCODE_ROOT"))
   (subpath (param "CHECKOUT"))
   (subpath (param "GIT_DIR"))

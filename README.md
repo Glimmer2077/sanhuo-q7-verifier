@@ -66,7 +66,8 @@
   `/Users`、`/Volumes`、`/Network`、`/Applications`、`/Library`、
   `/opt`、`/private` 和 `/dev` 全部重新关闭，只按精确工具链、checkout、
   缓存、输出与 `/private/var/db/timezone` 等固定系统输入逐项重开；
-  Xcode 位置由验证器固定设置 `DEVELOPER_DIR`，不读取系统选择数据库。
+  Xcode 位置由验证器固定设置 `DEVELOPER_DIR`，不读取系统选择数据库，只
+  额外读取 Xcode 固定的 `Frameworks/SharedFrameworks` 运行时目录。
 - 四候选的 `build / qualify / audit` 共 12 个固定命令，每个命令使用新的
   可写隔离区；构建只能写首次为空的当前候选目录，后续步骤只能写本步规定的
   精确文件，可信层还会核对“原有证据字节不变，且只新增本步规定文件”的

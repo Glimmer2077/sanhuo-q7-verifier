@@ -531,6 +531,8 @@ class TrustedVerifierTests(unittest.TestCase):
         )
         self.assertIn('(subpath (param "ACTION_ARTIFACT_ROOT"))', profile)
         self.assertIn('(subpath (param "ACTION_BINARY_ROOT"))', profile)
+        self.assertIn('(subpath (param "XCODE_FRAMEWORKS"))', profile)
+        self.assertIn('(subpath (param "XCODE_SHARED_FRAMEWORKS"))', profile)
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/dev/urandom")', profile)
 
@@ -610,6 +612,13 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-D",
                 f"XCODE_ROOT={developer_root}",
                 "-D",
+                (
+                    "XCODE_SHARED_FRAMEWORKS="
+                    "/Applications/Xcode.app/Contents/SharedFrameworks"
+                ),
+                "-D",
+                "XCODE_FRAMEWORKS=/Applications/Xcode.app/Contents/Frameworks",
+                "-D",
                 f"PYTHON_ROOT={python_root}",
                 "-D",
                 f"PLATFORMIO_ROOT={paths['cache']}",
@@ -675,6 +684,16 @@ class TrustedVerifierTests(unittest.TestCase):
                     ")\n"
                     "if xcode.returncode != 0:\n"
                     "    raise RuntimeError('xcrun cannot locate locked Xcode')\n"
+                    "git=subprocess.run(\n"
+                    "    ['/usr/bin/git', '--version'],\n"
+                    "    check=False, stdout=subprocess.PIPE,\n"
+                    "    stderr=subprocess.PIPE,\n"
+                    ")\n"
+                    "if git.returncode != 0:\n"
+                    "    raise RuntimeError(\n"
+                    "        'git cannot use locked Xcode: '\n"
+                    "        + git.stderr.decode('utf-8', errors='replace')\n"
+                    "    )\n"
                     f"platform_lock=Path({json.dumps(str(platform_lock))})\n"
                     "platform_lock.write_text('ephemeral', encoding='utf-8')\n"
                     f"package_lock=Path({json.dumps(str(package_lock))})\n"
