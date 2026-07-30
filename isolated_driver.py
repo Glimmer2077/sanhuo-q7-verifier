@@ -161,6 +161,7 @@ def _closed_environment() -> dict[str, str]:
         ],
         "SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT": (f"{runtime_home}/platformio-core"),
         "SANHUO_MATRIX_IDF_ROOT": idf_root,
+        "SANHUO_MATRIX_IDF_SOURCE_MODE": "trusted_pristine_snapshot_v1",
         "SANHUO_MATRIX_ESPRESSIF_ROOT": espressif_root,
         "SANHUO_MATRIX_TEST_PYTHON": test_python,
         "SANHUO_MATRIX_TEST_USER_SITE_ROOT": test_user_site_root,

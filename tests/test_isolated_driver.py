@@ -77,6 +77,10 @@ class IsolatedDriverTests(unittest.TestCase):
             closed["DEVELOPER_DIR"],
             "/Applications/Xcode.app/Contents/Developer",
         )
+        self.assertEqual(
+            closed["SANHUO_MATRIX_IDF_SOURCE_MODE"],
+            "trusted_pristine_snapshot_v1",
+        )
         self.assertNotIn("PYTHONPATH", closed)
 
     def test_failure_detail_is_bounded_and_terminal_safe(self) -> None:
