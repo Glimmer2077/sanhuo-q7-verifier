@@ -865,6 +865,15 @@ class RuntimeInputs:
 
 MAX_ARTIFACT_JSON_BYTES: Final = 16 * 1024 * 1024
 MAX_BINARY_BYTES: Final = 64 * 1024 * 1024
+RUN_DIRECTORY_PATTERN: Final = re.compile(r"^run-[0-9]+$")
+PERSISTENT_ARTIFACT_FILES: Final = {
+    "audit-report.json",
+    "build-report.json",
+    "manifest.generated.json",
+    "qualification-summary.json",
+    *(f"q{index}-report.json" for index in range(7)),
+}
+PERSISTENT_BINARY_FILES: Final = {"firmware.bin", "firmware.elf"}
 AUDIT_FIELDS: Final = {
     "schema",
     "candidate_id",
@@ -1533,6 +1542,103 @@ def _copy_regular_tree(source: Path, destination: Path) -> None:
     copy_directory(source, destination)
 
 
+def _copy_one_regular_file(source: Path, destination: Path) -> int:
+    payload = _read_regular_file_without_following(
+        source,
+        max_bytes=MAX_BINARY_BYTES,
+        label="persistent stage output",
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            _require(written > 0, "persistent snapshot write was incomplete")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return len(payload)
+
+
+def _snapshot_persistent_matrix_output(
+    source_output: Path,
+    destination_output: Path,
+) -> None:
+    """Seal only the fixed evidence contract, never temporary build trees."""
+
+    _require(
+        source_output.is_dir() and not source_output.is_symlink(),
+        "stage output root is invalid",
+    )
+    _require(
+        not destination_output.exists(),
+        "persistent stage snapshot already exists",
+    )
+    destination_output.mkdir(mode=0o700)
+    total_bytes = 0
+    roots = (
+        ("artifacts", PERSISTENT_ARTIFACT_FILES),
+        ("binaries", PERSISTENT_BINARY_FILES),
+    )
+    for root_name, allowed_files in roots:
+        source_root = source_output / root_name
+        _require(
+            source_root.is_dir() and not source_root.is_symlink(),
+            f"stage {root_name} root is invalid",
+        )
+        destination_root = destination_output / root_name
+        destination_root.mkdir(mode=0o700)
+        try:
+            candidate_entries = sorted(
+                os.scandir(source_root),
+                key=lambda item: item.name,
+            )
+        except OSError as exc:
+            raise VerificationError(
+                f"stage {root_name} root could not be listed"
+            ) from exc
+        for candidate_entry in candidate_entries:
+            _require(
+                candidate_entry.name in CANDIDATES
+                and candidate_entry.is_dir(follow_symlinks=False),
+                f"stage {root_name} candidate entry is invalid",
+            )
+            source_candidate = Path(candidate_entry.path)
+            destination_candidate = destination_root / candidate_entry.name
+            destination_candidate.mkdir(mode=0o700)
+            try:
+                entries = sorted(
+                    os.scandir(source_candidate),
+                    key=lambda item: item.name,
+                )
+            except OSError as exc:
+                raise VerificationError(
+                    f"stage {root_name} candidate could not be listed"
+                ) from exc
+            for entry in entries:
+                if (
+                    root_name == "artifacts"
+                    and RUN_DIRECTORY_PATTERN.fullmatch(entry.name)
+                    and entry.is_dir(follow_symlinks=False)
+                ):
+                    continue
+                _require(
+                    entry.name in allowed_files
+                    and entry.is_file(follow_symlinks=False),
+                    f"stage {root_name} contains an unexpected persistent entry",
+                )
+                total_bytes += _copy_one_regular_file(
+                    Path(entry.path),
+                    destination_candidate / entry.name,
+                )
+                _require(
+                    total_bytes <= 256 * 1024 * 1024,
+                    "persistent stage snapshot is too large",
+                )
+
+
 def run_isolated_matrix(
     *,
     checkout: Path,
@@ -1607,7 +1713,10 @@ def run_isolated_matrix(
         summaries.append(summary)
         sealed = runtime_home / f"sealed-{index:02d}"
         sealed.mkdir(mode=0o700)
-        _copy_regular_tree(stage_home / "output", sealed / "output")
+        _snapshot_persistent_matrix_output(
+            stage_home / "output",
+            sealed / "output",
+        )
         previous_snapshot = sealed
 
     _require(previous_snapshot is not None, "matrix produced no sealed snapshot")

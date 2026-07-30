@@ -400,6 +400,33 @@ class TrustedVerifierTests(unittest.TestCase):
                     root / "rejected",
                 )
 
+    def test_persistent_snapshot_excludes_temporary_build_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "output"
+            artifacts = output / "artifacts/MF-P2"
+            binaries = output / "binaries/MF-P2"
+            run_tree = artifacts / "run-12345"
+            run_tree.mkdir(parents=True)
+            binaries.mkdir(parents=True)
+            (run_tree / "temporary-object.o").write_bytes(b"x" * 1024)
+            (artifacts / "build-report.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            (binaries / "firmware.bin").write_bytes(b"bin")
+            (binaries / "firmware.elf").write_bytes(b"elf")
+            sealed = root / "sealed-output"
+
+            verifier._snapshot_persistent_matrix_output(output, sealed)
+
+            self.assertFalse((sealed / "artifacts/MF-P2/run-12345").exists())
+            self.assertTrue((sealed / "artifacts/MF-P2/build-report.json").is_file())
+            self.assertEqual(
+                (sealed / "binaries/MF-P2/firmware.elf").read_bytes(),
+                b"elf",
+            )
+
     def test_operator_review_directory_cannot_overlap_readable_roots(
         self,
     ) -> None:
