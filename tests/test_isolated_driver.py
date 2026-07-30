@@ -81,6 +81,10 @@ class IsolatedDriverTests(unittest.TestCase):
             closed["SANHUO_MATRIX_IDF_SOURCE_MODE"],
             "trusted_pristine_snapshot_v1",
         )
+        self.assertEqual(
+            closed["PLATFORMIO_SETTING_CHECK_PLATFORMIO_INTERVAL"],
+            "2147483647",
+        )
         self.assertNotIn("PYTHONPATH", closed)
 
     def test_failure_detail_is_bounded_and_terminal_safe(self) -> None:
