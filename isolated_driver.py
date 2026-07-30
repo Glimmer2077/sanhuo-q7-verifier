@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -22,8 +21,6 @@ PLATFORMIO_PACKAGE_INPUTS = (
     "tool-esptoolpy",
     "tool-scons",
 )
-ESPRESSIF_DIRECTORY_INPUTS = ("dist", "python_env", "tools")
-ESPRESSIF_FILE_INPUTS = ("espidf.constraints.v5.5.txt",)
 CLI = Path(
     os.environ.get("SANHUO_Q7_CHECKOUT", "/workspace")
     + "/firmware/sanhuo-stackchan-idf/"
@@ -204,7 +201,6 @@ def _closed_environment() -> dict[str, str]:
         "LC_ALL": "C.UTF-8",
         "TMPDIR": f"{runtime_home}/tmp",
         "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": test_user_site_root,
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PLATFORMIO_CORE_DIR": platformio_root,
@@ -239,9 +235,6 @@ def _closed_environment() -> dict[str, str]:
         ),
         "SANHUO_MATRIX_IDF_ROOT": idf_root,
         "SANHUO_MATRIX_ESPRESSIF_ROOT": espressif_root,
-        "SANHUO_MATRIX_ESPRESSIF_RUNTIME_ROOT": (
-            f"{runtime_home}/espressif"
-        ),
         "SANHUO_MATRIX_TEST_PYTHON": test_python,
         "SANHUO_MATRIX_TEST_USER_SITE_ROOT": test_user_site_root,
         "SANHUO_MATRIX_HOMEBREW_ROOT": homebrew_root,
@@ -254,7 +247,6 @@ def prepare_runtime_layout() -> None:
         raise RuntimeError("target Q7 CLI is missing")
     runtime_home = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
     platformio_root = Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
-    espressif_root = Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
     (runtime_home / "output/artifacts").mkdir(parents=True)
     (runtime_home / "output/binaries").mkdir(parents=True)
     runtime_platformio = runtime_home / "platformio-core"
@@ -279,25 +271,6 @@ def prepare_runtime_layout() -> None:
             source.resolve(),
             target_is_directory=True,
         )
-    runtime_espressif = runtime_home / "espressif"
-    runtime_espressif.mkdir()
-    for name in ESPRESSIF_DIRECTORY_INPUTS:
-        source = espressif_root / name
-        if not source.is_dir() or source.is_symlink():
-            raise RuntimeError("locked ESP-IDF directory input is invalid")
-        (runtime_espressif / name).symlink_to(
-            source.resolve(),
-            target_is_directory=True,
-        )
-    for name in ESPRESSIF_FILE_INPUTS:
-        source = espressif_root / name
-        if not source.is_file() or source.is_symlink():
-            raise RuntimeError("locked ESP-IDF file input is invalid")
-        (runtime_espressif / name).symlink_to(source.resolve())
-    idf_environment = espressif_root / "idf-env.json"
-    if not idf_environment.is_file() or idf_environment.is_symlink():
-        raise RuntimeError("locked ESP-IDF environment input is invalid")
-    shutil.copyfile(idf_environment, runtime_espressif / "idf-env.json")
 
 
 def _process_group_still_exists(process_group: int) -> bool:

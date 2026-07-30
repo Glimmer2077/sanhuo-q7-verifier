@@ -68,10 +68,7 @@ class IsolatedDriverTests(unittest.TestCase):
             closed["SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT"],
             "/tmp/runtime/platformio-core",
         )
-        self.assertEqual(
-            closed["SANHUO_MATRIX_ESPRESSIF_RUNTIME_ROOT"],
-            "/tmp/runtime/espressif",
-        )
+        self.assertNotIn("PYTHONPATH", closed)
 
     def test_failure_detail_is_bounded_and_terminal_safe(self) -> None:
         raw = b"\x1b[31mboom\n" + (b"x" * 5000)
@@ -94,7 +91,6 @@ class IsolatedDriverTests(unittest.TestCase):
             root = Path(temporary)
             runtime = root / "runtime"
             platformio = root / "locked-platformio"
-            espressif = root / "locked-espressif"
             cli = root / "cli_phase2.py"
             cli.write_text("# fixture\n", encoding="utf-8")
             (platformio / "platforms/espressif32").mkdir(parents=True)
@@ -107,15 +103,6 @@ class IsolatedDriverTests(unittest.TestCase):
             )
             for name in package_names:
                 (platformio / "packages" / name).mkdir(parents=True)
-            for name in isolated_driver.ESPRESSIF_DIRECTORY_INPUTS:
-                (espressif / name).mkdir(parents=True)
-            for name in isolated_driver.ESPRESSIF_FILE_INPUTS:
-                (espressif / name).write_text("locked\n", encoding="utf-8")
-            (espressif / "idf-env.json").write_text(
-                '{"idfInstalled": {}}\n',
-                encoding="utf-8",
-            )
-
             with (
                 mock.patch.object(isolated_driver, "CLI", cli),
                 mock.patch.dict(
@@ -123,7 +110,6 @@ class IsolatedDriverTests(unittest.TestCase):
                     {
                         "SANHUO_Q7_RUNTIME_HOME": str(runtime),
                         "SANHUO_Q7_PLATFORMIO_ROOT": str(platformio),
-                        "SANHUO_Q7_ESPRESSIF_ROOT": str(espressif),
                     },
                     clear=True,
                 ),
@@ -154,24 +140,6 @@ class IsolatedDriverTests(unittest.TestCase):
                         runtime / "platformio-core/packages"
                     ).iterdir()
                 )
-            )
-            self.assertTrue(
-                all(
-                    (runtime / "espressif" / name).is_symlink()
-                    for name in (
-                        *isolated_driver.ESPRESSIF_DIRECTORY_INPUTS,
-                        *isolated_driver.ESPRESSIF_FILE_INPUTS,
-                    )
-                )
-            )
-            self.assertFalse(
-                (runtime / "espressif/idf-env.json").is_symlink()
-            )
-            self.assertEqual(
-                (runtime / "espressif/idf-env.json").read_text(
-                    encoding="utf-8"
-                ),
-                '{"idfInstalled": {}}\n',
             )
 
 
