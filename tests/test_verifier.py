@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -45,6 +46,49 @@ class TrustedVerifierTests(unittest.TestCase):
             }
             for candidate in verifier.CANDIDATES
         }
+
+    def test_runtime_manifest_changes_only_fresh_evidence_fields(self) -> None:
+        tracked = {
+            field: None for field in verifier.RUNTIME_MANIFEST_DYNAMIC_FIELDS
+        }
+        tracked.update(
+            {
+                "candidate_id": "MF-P2",
+                "state": "research_only",
+                "hardware_state": {
+                    "eligible": False,
+                    "flashable": False,
+                    "authorized": False,
+                    "commands": [],
+                },
+                "build_tool_capabilities": {
+                    "network": False,
+                    "serial": False,
+                    "flash": False,
+                    "reset": False,
+                    "playback": False,
+                    "motion": False,
+                },
+            }
+        )
+        runtime = copy.deepcopy(tracked)
+        runtime["firmware"] = {"sha256": "a" * 64}
+        verifier._validate_runtime_manifest_static_binding(
+            candidate="MF-P2",
+            runtime_manifest=runtime,
+            tracked_manifest=tracked,
+        )
+
+        runtime["state"] = "qualified"
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "tracked static field",
+        ):
+            verifier._validate_runtime_manifest_static_binding(
+                candidate="MF-P2",
+                runtime_manifest=runtime,
+                tracked_manifest=tracked,
+            )
 
     def approved_report(
         self,

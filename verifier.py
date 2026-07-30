@@ -90,6 +90,18 @@ EVIDENCE_FIELDS: Final = {
     "gate_evidence_sha256",
 }
 GATES: Final = tuple(f"Q{index}" for index in range(7))
+RUNTIME_MANIFEST_DYNAMIC_FIELDS: Final = {
+    "toolchain_lock_sha256",
+    "schedule_sha256",
+    "source_sha256",
+    "patch_sha256",
+    "firmware",
+    "elf",
+    "builds",
+    "resources",
+    "firmware_capabilities",
+    "gate_results",
+}
 GIT_ENVIRONMENT_FIELDS: Final = {
     "HOME",
     "PATH",
@@ -1279,6 +1291,47 @@ def _validate_self_hash(report: dict[str, Any], *, label: str) -> str:
     return recorded
 
 
+def _validate_runtime_manifest_static_binding(
+    *,
+    candidate: str,
+    runtime_manifest: Mapping[str, Any],
+    tracked_manifest: Mapping[str, Any],
+) -> None:
+    _require(
+        set(runtime_manifest) == set(tracked_manifest)
+        and RUNTIME_MANIFEST_DYNAMIC_FIELDS.issubset(runtime_manifest),
+        f"{candidate} runtime manifest fields drift",
+    )
+    static_fields = set(runtime_manifest) - RUNTIME_MANIFEST_DYNAMIC_FIELDS
+    _require(
+        all(
+            runtime_manifest[field] == tracked_manifest[field]
+            for field in static_fields
+        ),
+        f"{candidate} runtime manifest changed a tracked static field",
+    )
+    _require(
+        runtime_manifest.get("candidate_id") == candidate
+        and runtime_manifest.get("hardware_state")
+        == {
+            "eligible": False,
+            "flashable": False,
+            "authorized": False,
+            "commands": [],
+        }
+        and runtime_manifest.get("build_tool_capabilities")
+        == {
+            "network": False,
+            "serial": False,
+            "flash": False,
+            "reset": False,
+            "playback": False,
+            "motion": False,
+        },
+        f"{candidate} runtime manifest crossed the hardware boundary",
+    )
+
+
 def collect_matrix_evidence(
     checkout: Path,
     isolated_summary: Mapping[str, Any],
@@ -1306,14 +1359,26 @@ def collect_matrix_evidence(
     for candidate in CANDIDATES:
         audit_path = artifact_root / candidate / "audit-report.json"
         build_path = artifact_root / candidate / "build-report.json"
-        manifest_path = candidate_root / candidate / "manifest.json"
+        tracked_manifest_path = candidate_root / candidate / "manifest.json"
+        manifest_path = (
+            artifact_root / candidate / "manifest.generated.json"
+        )
         firmware_path = binary_root / candidate / "firmware.bin"
         elf_path = binary_root / candidate / "firmware.elf"
         audit = _load_artifact_json(audit_path, label=f"{candidate} audit")
         build = _load_artifact_json(build_path, label=f"{candidate} build")
         manifest = _load_artifact_json(
             manifest_path,
-            label=f"{candidate} manifest",
+            label=f"{candidate} runtime manifest",
+        )
+        tracked_manifest = _load_artifact_json(
+            tracked_manifest_path,
+            label=f"{candidate} tracked manifest",
+        )
+        _validate_runtime_manifest_static_binding(
+            candidate=candidate,
+            runtime_manifest=manifest,
+            tracked_manifest=tracked_manifest,
         )
         _require(set(audit) == AUDIT_FIELDS, f"{candidate} audit fields drift")
         audit_report_sha256 = _validate_self_hash(
