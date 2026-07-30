@@ -835,6 +835,7 @@ def sandbox_command(
         "PATH=/usr/bin:/bin",
         "LANG=C.UTF-8",
         "LC_ALL=C.UTF-8",
+        f"DEVELOPER_DIR={xcode_root}",
         f"TMPDIR={runtime_home.resolve() / 'tmp'}",
         "PYTHONNOUSERSITE=1",
         "PYTHONDONTWRITEBYTECODE=1",

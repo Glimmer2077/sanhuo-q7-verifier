@@ -566,6 +566,9 @@ class TrustedVerifierTests(unittest.TestCase):
             package_lock = paths["cache"] / "packages.lock"
             profile = (Path(__file__).parents[1] / "sanhuo-q7.sb").resolve()
             python_root = Path(sys.executable).resolve().parent.parent
+            developer_root = Path(
+                "/Applications/Xcode.app/Contents/Developer"
+            ).resolve()
             command = [
                 "/usr/bin/sandbox-exec",
                 "-f",
@@ -605,7 +608,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-D",
                 f"SEALED_INPUT={paths['runtime']}",
                 "-D",
-                f"XCODE_ROOT={python_root}",
+                f"XCODE_ROOT={developer_root}",
                 "-D",
                 f"PYTHON_ROOT={python_root}",
                 "-D",
@@ -644,6 +647,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 "/usr/bin/env",
                 "-i",
                 f"TMPDIR={paths['runtime'] / 'tmp'}",
+                f"DEVELOPER_DIR={developer_root}",
                 "PYTHONFAULTHANDLER=1",
                 str(Path(sys.executable).resolve()),
                 "-c",
@@ -664,6 +668,13 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    pass\n"
                     "else:\n"
                     "    raise RuntimeError('unlisted host data became readable')\n"
+                    "xcode=subprocess.run(\n"
+                    "    ['/usr/bin/xcrun', '--find', 'xcodebuild'],\n"
+                    "    check=False, stdout=subprocess.PIPE,\n"
+                    "    stderr=subprocess.PIPE,\n"
+                    ")\n"
+                    "if xcode.returncode != 0:\n"
+                    "    raise RuntimeError('xcrun cannot locate locked Xcode')\n"
                     f"platform_lock=Path({json.dumps(str(platform_lock))})\n"
                     "platform_lock.write_text('ephemeral', encoding='utf-8')\n"
                     f"package_lock=Path({json.dumps(str(package_lock))})\n"
