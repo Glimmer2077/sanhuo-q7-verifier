@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,23 @@ import verifier
 
 
 class TrustedVerifierTests(unittest.TestCase):
+    def run_git(self, repository: Path, *arguments: str) -> str:
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", str(repository), *arguments],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                "HOME": str(repository.parent),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+            },
+        )
+        return result.stdout.decode("utf-8").strip()
+
     def matrix_evidence(self) -> dict[str, dict[str, object]]:
         return {
             candidate: {
@@ -72,6 +90,69 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertNotIn("GIT_ALTERNATE_OBJECT_DIRECTORIES", environment)
         self.assertNotIn("SSH_AUTH_SOCK", environment)
         self.assertEqual(set(environment), verifier.GIT_ENVIRONMENT_FIELDS)
+
+    def test_target_checkout_uses_exact_local_commit_not_dirty_worktree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            self.run_git(source, "init", "--quiet")
+            self.run_git(source, "config", "user.name", "Q7 test")
+            self.run_git(source, "config", "user.email", "q7@example.invalid")
+            (source / "tracked.txt").write_text("committed\n", encoding="utf-8")
+            self.run_git(source, "add", "tracked.txt")
+            self.run_git(source, "commit", "--quiet", "-m", "fixture")
+            target_commit = self.run_git(source, "rev-parse", "HEAD")
+
+            (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+            (source / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+
+            checkout = root / "checkout"
+            git_dir = root / "target.git"
+            git_home = root / "git-home"
+            git_home.mkdir()
+            verifier.create_target_checkout(
+                target_commit=target_commit,
+                target_repository=source,
+                checkout=checkout,
+                git_dir=git_dir,
+                home=git_home,
+            )
+
+            self.assertEqual(
+                (checkout / "tracked.txt").read_text(encoding="utf-8"),
+                "committed\n",
+            )
+            self.assertFalse((checkout / "untracked.txt").exists())
+            self.assertNotIn(
+                str(source.resolve()),
+                (git_dir / "config").read_text(encoding="utf-8"),
+            )
+
+    def test_target_checkout_rejects_non_git_workspace_before_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            git_home = root / "git-home"
+            git_home.mkdir()
+
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "not a regular Git worktree",
+            ):
+                verifier.create_target_checkout(
+                    target_commit="a" * 40,
+                    target_repository=source,
+                    checkout=root / "checkout",
+                    git_dir=root / "target.git",
+                    home=git_home,
+                )
+
+            self.assertFalse((root / "checkout").exists())
+            self.assertFalse((root / "target.git").exists())
 
     def test_sandbox_has_no_network_devices_or_credentials(self) -> None:
         command = verifier.sandbox_command(

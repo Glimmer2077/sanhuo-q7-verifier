@@ -820,7 +820,6 @@ class RuntimeInputs:
     host_cxx: Path
 
 
-TARGET_REMOTE: Final = f"https://github.com/{REPOSITORY}.git"
 MAX_ARTIFACT_JSON_BYTES: Final = 16 * 1024 * 1024
 MAX_BINARY_BYTES: Final = 64 * 1024 * 1024
 AUDIT_FIELDS: Final = {
@@ -979,13 +978,49 @@ def verifier_commit(trusted_root: Path, home: Path) -> str:
 def create_target_checkout(
     *,
     target_commit: str,
+    target_repository: Path,
     checkout: Path,
     git_dir: Path,
     home: Path,
 ) -> None:
-    """Fetch only the requested remote commit into a disposable separate Git dir."""
+    """Copy only the requested local Git commit into a disposable checkout."""
 
     _validate_commit(target_commit, "target")
+    _require(
+        not target_repository.is_symlink(),
+        "target repository is not a regular Git worktree",
+    )
+    source = target_repository.resolve()
+    source_git_dir = source / ".git"
+    _require(
+        source.is_dir()
+        and not source.is_symlink()
+        and source_git_dir.is_dir()
+        and not source_git_dir.is_symlink(),
+        "target repository is not a regular Git worktree",
+    )
+    source_top = _git(
+        ["-C", str(source), "rev-parse", "--show-toplevel"],
+        home=home,
+    ).decode("utf-8").strip()
+    _require(
+        Path(source_top).resolve() == source,
+        "target repository root does not match tool workspace",
+    )
+    source_commit = _git(
+        [
+            "-C",
+            str(source),
+            "rev-parse",
+            "--verify",
+            f"{target_commit}^{{commit}}",
+        ],
+        home=home,
+    ).decode("ascii").strip()
+    _require(
+        source_commit == target_commit,
+        "local target commit does not match request",
+    )
     _require(not checkout.exists(), "disposable checkout already exists")
     _require(not git_dir.exists(), "disposable Git directory already exists")
     _git(
@@ -997,27 +1032,30 @@ def create_target_checkout(
         home=home,
     )
     _git(
-        ["-C", str(checkout), "remote", "add", "origin", TARGET_REMOTE],
-        home=home,
-    )
-    _git(
         [
             "-C",
             str(checkout),
             "fetch",
             "--no-tags",
             "--depth=1",
-            "origin",
+            "--no-write-fetch-head",
+            str(source),
             target_commit,
         ],
         home=home,
         timeout=600,
     )
     fetched = _git(
-        ["-C", str(checkout), "rev-parse", "--verify", "FETCH_HEAD"],
+        [
+            "--git-dir",
+            str(git_dir),
+            "rev-parse",
+            "--verify",
+            f"{target_commit}^{{commit}}",
+        ],
         home=home,
     ).decode("ascii").strip()
-    _require(fetched == target_commit, "remote target commit does not match request")
+    _require(fetched == target_commit, "copied target commit does not match request")
     _git(
         [
             "--git-dir",
@@ -1537,6 +1575,7 @@ def _execute_fresh_matrix(
         git_home.mkdir(mode=0o700)
         create_target_checkout(
             target_commit=target_commit,
+            target_repository=tool_workspace,
             checkout=checkout,
             git_dir=git_dir,
             home=git_home,
