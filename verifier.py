@@ -35,6 +35,7 @@ MAX_REPORT_BYTES: Final = 256 * 1024
 MAX_FINDINGS: Final = 100
 MAX_LINE_NUMBER: Final = 10_000_000
 MAX_TRACKED_FILES: Final = 100_000
+MAX_ACTION_OUTPUT_FILES: Final = 9
 COMMIT_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 INSTANCE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$")
@@ -96,6 +97,31 @@ EVIDENCE_FIELDS: Final = {
     "gate_evidence_sha256",
 }
 GATES: Final = tuple(f"Q{index}" for index in range(7))
+GATE_REPORT_FIELDS: Final = {
+    "schema",
+    "candidate_id",
+    "gate",
+    "status",
+    "evidence_sha256",
+    "covered",
+    "not_covered",
+}
+PRECHECK_SUMMARY_FIELDS: Final = {
+    "schema",
+    "candidate_id",
+    "precheck_status",
+    "gate_results",
+    "q7_receipt_sha256",
+    "review_mode",
+    "assurance_limitations",
+    "known_risks",
+    "non_blocking_findings",
+    "offline_qualified",
+    "hardware_test_eligible",
+    "flashable",
+    "hardware_authorized",
+    "hardware_commands",
+}
 RUNTIME_MANIFEST_DYNAMIC_FIELDS: Final = {
     "toolchain_lock_sha256",
     "schedule_sha256",
@@ -655,6 +681,7 @@ def sandbox_command(
     cache: Path,
     trusted_root: Path,
     runtime_home: Path,
+    output_root: Path,
     test_python: Path,
     test_user_site_root: Path,
     homebrew_root: Path,
@@ -680,9 +707,54 @@ def sandbox_command(
         )
     else:
         _require(candidate is None and action is None, "evidence action must be empty")
+    if candidate is None or action != "build":
+        action_artifact_root = runtime_home / "unused-artifacts"
+        action_binary_root = runtime_home / "unused-binaries"
+    else:
+        action_artifact_root = output_root / "artifacts" / candidate
+        action_binary_root = output_root / "binaries" / candidate
+    action_output_paths = (
+        sorted(
+            output_root / relative.format(candidate=candidate)
+            for relative in ACTION_ADDED_FILES[action]
+        )
+        if candidate is not None and action is not None
+        else []
+    )
+    _require(
+        len(action_output_paths) <= MAX_ACTION_OUTPUT_FILES,
+        "driver action output count exceeds the sandbox contract",
+    )
+    action_output_paths.extend(
+        runtime_home / f"unused-output-{index:02d}"
+        for index in range(
+            len(action_output_paths),
+            MAX_ACTION_OUTPUT_FILES,
+        )
+    )
     sealed_input = (
         sealed_input.resolve() if sealed_input is not None else runtime_home.resolve()
     )
+    xcode_root = Path("/Applications/Xcode.app/Contents/Developer").resolve()
+    executable_roots = {
+        "EXEC_PYTHON_ROOT": python_root,
+        "EXEC_PIO_PLATFORM": platformio_root / "platforms/espressif32",
+        "EXEC_PIO_FRAMEWORK": (
+            platformio_root / "packages/framework-arduinoespressif32"
+        ),
+        "EXEC_PIO_XTENSA": (platformio_root / "packages/toolchain-xtensa-esp32s3"),
+        "EXEC_PIO_RISCV": platformio_root / "packages/toolchain-riscv32-esp",
+        "EXEC_PIO_ESPTOOL": platformio_root / "packages/tool-esptoolpy",
+        "EXEC_PIO_SCONS": platformio_root / "packages/tool-scons",
+        "EXEC_IDF_ROOT": idf_root,
+        "EXEC_IDF_PYTHON": (espressif_root / "python_env/idf5.5_py3.11_env"),
+        "EXEC_IDF_XTENSA": (
+            espressif_root / "tools/xtensa-esp-elf/esp-14.2.0_20260121"
+        ),
+        "EXEC_HOMEBREW_PYTHON": (homebrew_root / "Cellar/python@3.11/3.11.14_3"),
+        "EXEC_HOMEBREW_CMAKE": homebrew_root / "Cellar/cmake/4.3.4",
+        "EXEC_HOMEBREW_NINJA": homebrew_root / "Cellar/ninja/1.13.2",
+    }
     command = [
         "sandbox-exec",
         "-f",
@@ -698,7 +770,20 @@ def sandbox_command(
         "-D",
         f"RUNTIME_HOME={runtime_home.resolve()}",
         "-D",
+        f"OUTPUT_ROOT={output_root.resolve()}",
+        "-D",
+        f"ACTION_ARTIFACT_ROOT={action_artifact_root.resolve()}",
+        "-D",
+        f"ACTION_BINARY_ROOT={action_binary_root.resolve()}",
+        *[
+            item
+            for index, path in enumerate(action_output_paths)
+            for item in ("-D", f"ACTION_OUTPUT_{index:02d}={path.resolve()}")
+        ],
+        "-D",
         f"SEALED_INPUT={sealed_input}",
+        "-D",
+        f"XCODE_ROOT={xcode_root}",
         "-D",
         f"PYTHON_ROOT={python_root}",
         "-D",
@@ -713,6 +798,11 @@ def sandbox_command(
         f"ESPRESSIF_ROOT={espressif_root}",
         "-D",
         f"TEST_USER_SITE_ROOT={test_user_site_root.resolve()}",
+        *[
+            item
+            for name, path in executable_roots.items()
+            for item in ("-D", f"{name}={path.resolve()}")
+        ],
         "/usr/bin/env",
         "-i",
         f"HOME={runtime_home.resolve()}",
@@ -730,6 +820,7 @@ def sandbox_command(
         f"SANHUO_Q7_CHECKOUT={checkout.resolve()}",
         f"SANHUO_Q7_CACHE={cache.resolve()}",
         f"SANHUO_Q7_RUNTIME_HOME={runtime_home.resolve()}",
+        f"SANHUO_Q7_OUTPUT_ROOT={output_root.resolve()}",
         f"SANHUO_Q7_DRIVER_MODE={driver_mode}",
         f"SANHUO_Q7_SEALED_INPUT={sealed_input}",
         f"SANHUO_Q7_PLATFORMIO_ROOT={platformio_root}",
@@ -878,6 +969,19 @@ PERSISTENT_ARTIFACT_FILES: Final = {
     *(f"q{index}-report.json" for index in range(7)),
 }
 PERSISTENT_BINARY_FILES: Final = {"firmware.bin", "firmware.elf"}
+ACTION_ADDED_FILES: Final = {
+    "build": {
+        "artifacts/{candidate}/build-report.json",
+        "binaries/{candidate}/firmware.bin",
+        "binaries/{candidate}/firmware.elf",
+    },
+    "qualify": {
+        "artifacts/{candidate}/manifest.generated.json",
+        "artifacts/{candidate}/qualification-summary.json",
+        *(f"artifacts/{{candidate}}/q{index}-report.json" for index in range(7)),
+    },
+    "audit": {"artifacts/{candidate}/audit-report.json"},
+}
 AUDIT_FIELDS: Final = {
     "schema",
     "candidate_id",
@@ -1643,6 +1747,80 @@ def _snapshot_persistent_matrix_output(
                 )
 
 
+def _persistent_output_hashes(output_root: Path) -> dict[str, str]:
+    """Hash the already-validated persistent snapshot without following links."""
+
+    hashes: dict[str, str] = {}
+    for root_name, allowed_files in (
+        ("artifacts", PERSISTENT_ARTIFACT_FILES),
+        ("binaries", PERSISTENT_BINARY_FILES),
+    ):
+        root = output_root / root_name
+        _require(
+            root.is_dir() and not root.is_symlink(),
+            f"persistent {root_name} root is invalid",
+        )
+        for candidate in CANDIDATES:
+            candidate_root = root / candidate
+            if not candidate_root.exists():
+                continue
+            _require(
+                candidate_root.is_dir() and not candidate_root.is_symlink(),
+                "persistent candidate root is invalid",
+            )
+            for entry in os.scandir(candidate_root):
+                _require(
+                    entry.name in allowed_files
+                    and entry.is_file(follow_symlinks=False),
+                    "persistent snapshot contains an unexpected entry",
+                )
+                relative = f"{root_name}/{candidate}/{entry.name}"
+                digest, _ = _sha256_regular_file(
+                    Path(entry.path),
+                    label=f"persistent action file {relative}",
+                )
+                hashes[relative] = digest
+    return dict(sorted(hashes.items()))
+
+
+def _validate_action_delta(
+    *,
+    candidate: str,
+    action: str,
+    before: Mapping[str, str],
+    after: Mapping[str, str],
+) -> dict[str, Any]:
+    """Require one action to add only its exact files and preserve all prior bytes."""
+
+    _require(
+        candidate in CANDIDATES and action in ACTION_ADDED_FILES,
+        "trusted action delta identity is invalid",
+    )
+    expected_added = {
+        path.format(candidate=candidate) for path in ACTION_ADDED_FILES[action]
+    }
+    before_keys = set(before)
+    after_keys = set(after)
+    _require(
+        before_keys <= after_keys
+        and all(after[path] == before[path] for path in before_keys),
+        "trusted action changed prior persistent evidence",
+    )
+    observed_added = after_keys - before_keys
+    _require(
+        observed_added == expected_added,
+        "trusted action persistent file delta drift",
+    )
+    return {
+        "schema": "sanhuo.trusted_q7_stage_receipt.v1",
+        "candidate": candidate,
+        "action": action,
+        "input_persistent_sha256": sha256_json(dict(sorted(before.items()))),
+        "output_persistent_sha256": sha256_json(dict(sorted(after.items()))),
+        "added_files": sorted(observed_added),
+    }
+
+
 def run_isolated_matrix(
     *,
     checkout: Path,
@@ -1657,23 +1835,40 @@ def run_isolated_matrix(
     runtime_home.mkdir(mode=0o700)
     summaries: list[dict[str, Any]] = []
     previous_snapshot: Path | None = None
+    previous_hashes: dict[str, str] = {}
     for index, (candidate, action) in enumerate(container_actions()):
-        stage_home = runtime_home / f"stage-{index:02d}"
+        stage_root = runtime_home / f"stage-{index:02d}"
+        stage_root.mkdir(mode=0o700)
+        stage_home = stage_root / "runtime"
         stage_home.mkdir(mode=0o700)
         (stage_home / "tmp").mkdir(mode=0o700)
+        stage_output = stage_root / "output"
         if previous_snapshot is None:
-            (stage_home / "output").mkdir(mode=0o700)
+            stage_output.mkdir(mode=0o700)
+            (stage_output / "artifacts").mkdir(mode=0o700)
+            (stage_output / "binaries").mkdir(mode=0o700)
         else:
             _copy_regular_tree(
                 previous_snapshot / "output",
-                stage_home / "output",
+                stage_output,
             )
+        (stage_output / "artifacts" / candidate).mkdir(
+            parents=True,
+            mode=0o700,
+            exist_ok=True,
+        )
+        (stage_output / "binaries" / candidate).mkdir(
+            parents=True,
+            mode=0o700,
+            exist_ok=True,
+        )
         command = sandbox_command(
             checkout=checkout,
             git_dir=git_dir,
             cache=inputs.cache_root,
             trusted_root=trusted_root,
             runtime_home=stage_home,
+            output_root=stage_output,
             test_python=inputs.test_python,
             test_user_site_root=inputs.test_user_site_root,
             homebrew_root=inputs.homebrew_root,
@@ -1714,25 +1909,50 @@ def run_isolated_matrix(
             and summary.get("hardware_devices") is False,
             "isolated action summary is invalid",
         )
-        summaries.append(summary)
         sealed = runtime_home / f"sealed-{index:02d}"
         sealed.mkdir(mode=0o700)
         _snapshot_persistent_matrix_output(
-            stage_home / "output",
+            stage_output,
             sealed / "output",
         )
+        current_hashes = _persistent_output_hashes(sealed / "output")
+        receipt = _validate_action_delta(
+            candidate=candidate,
+            action=action,
+            before=previous_hashes,
+            after=current_hashes,
+        )
+        receipt.update(
+            {
+                "action_stdout_sha256": _validate_sha256(
+                    summary.get("stdout_sha256"),
+                    "isolated action stdout",
+                ),
+                "network": False,
+                "hardware_devices": False,
+            }
+        )
+        summaries.append(receipt)
         previous_snapshot = sealed
+        previous_hashes = current_hashes
 
     _require(previous_snapshot is not None, "matrix produced no sealed snapshot")
-    evidence_home = runtime_home / "evidence"
+    evidence_root = runtime_home / "evidence"
+    evidence_root.mkdir(mode=0o700)
+    evidence_home = evidence_root / "runtime"
     evidence_home.mkdir(mode=0o700)
     (evidence_home / "tmp").mkdir(mode=0o700)
+    evidence_output = evidence_root / "output"
+    evidence_output.mkdir(mode=0o700)
+    (evidence_output / "artifacts").mkdir(mode=0o700)
+    (evidence_output / "binaries").mkdir(mode=0o700)
     command = sandbox_command(
         checkout=checkout,
         git_dir=git_dir,
         cache=inputs.cache_root,
         trusted_root=trusted_root,
         runtime_home=evidence_home,
+        output_root=evidence_output,
         test_python=inputs.test_python,
         test_user_site_root=inputs.test_user_site_root,
         homebrew_root=inputs.homebrew_root,
@@ -1856,6 +2076,83 @@ def _validate_runtime_manifest_static_binding(
     )
 
 
+def _validate_precheck_artifacts(
+    *,
+    candidate: str,
+    gate_reports: Mapping[str, Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    audit_gates: Mapping[str, Any],
+    manifest_gates: Mapping[str, Any],
+) -> None:
+    """Validate every Q0-Q6 report and the fail-closed precheck summary directly."""
+
+    _require(
+        set(gate_reports) == set(GATES) and set(audit_gates) == set(GATES),
+        f"{candidate} precheck gate set drift",
+    )
+    expected_gate_results: dict[str, dict[str, Any]] = {}
+    for gate in GATES:
+        report = gate_reports[gate]
+        _require(
+            set(report) == GATE_REPORT_FIELDS
+            and report["schema"] == "sanhuo.motion_phase2_gate_report.v1"
+            and report["candidate_id"] == candidate
+            and report["gate"] == gate
+            and report["status"] == "passed"
+            and type(report["covered"]) is list
+            and bool(report["covered"])
+            and all(type(item) is str and bool(item) for item in report["covered"])
+            and type(report["not_covered"]) is list
+            and all(type(item) is str and bool(item) for item in report["not_covered"]),
+            f"{candidate} {gate} report is invalid",
+        )
+        report_evidence_sha256 = _validate_sha256(
+            report["evidence_sha256"],
+            f"{candidate} {gate} report evidence",
+        )
+        manifest_gate = manifest_gates.get(gate)
+        _require(
+            type(manifest_gate) is dict
+            and manifest_gate
+            == {
+                "status": "passed",
+                "report_sha256": report_evidence_sha256,
+            }
+            and report_evidence_sha256 == audit_gates[gate],
+            f"{candidate} {gate} direct evidence binding drift",
+        )
+        expected_gate_results[gate] = dict(manifest_gate)
+    expected_gate_results["Q7"] = {
+        "status": "blocked",
+        "report_sha256": None,
+        "reason": "independent review credential is absent",
+    }
+    _require(
+        manifest_gates.get("Q7")
+        == {
+            "status": "blocked",
+            "report_sha256": None,
+        }
+        and set(summary) == PRECHECK_SUMMARY_FIELDS
+        and summary["schema"] == "sanhuo.motion_phase2_qualification_summary.v2"
+        and summary["candidate_id"] == candidate
+        and summary["precheck_status"] == "passed"
+        and summary["gate_results"] == expected_gate_results
+        and summary["q7_receipt_sha256"] is None
+        and summary["review_mode"] is None
+        and summary["assurance_limitations"]
+        == ["Q7 independent review has not produced a trusted receipt"]
+        and summary["known_risks"] == ["offline Q0-Q6 precheck is not Q7 qualification"]
+        and summary["non_blocking_findings"] == []
+        and summary["offline_qualified"] is False
+        and summary["hardware_test_eligible"] is False
+        and summary["flashable"] is False
+        and summary["hardware_authorized"] is False
+        and summary["hardware_commands"] == [],
+        f"{candidate} qualification summary is invalid",
+    )
+
+
 def collect_matrix_evidence(
     checkout: Path,
     isolated_summary: Mapping[str, Any],
@@ -1882,12 +2179,24 @@ def collect_matrix_evidence(
     for candidate in CANDIDATES:
         audit_path = artifact_root / candidate / "audit-report.json"
         build_path = artifact_root / candidate / "build-report.json"
+        summary_path = artifact_root / candidate / "qualification-summary.json"
         tracked_manifest_path = candidate_root / candidate / "manifest.json"
         manifest_path = artifact_root / candidate / "manifest.generated.json"
         firmware_path = binary_root / candidate / "firmware.bin"
         elf_path = binary_root / candidate / "firmware.elf"
         audit = _load_artifact_json(audit_path, label=f"{candidate} audit")
         build = _load_artifact_json(build_path, label=f"{candidate} build")
+        summary = _load_artifact_json(
+            summary_path,
+            label=f"{candidate} qualification summary",
+        )
+        gate_reports = {
+            gate: _load_artifact_json(
+                artifact_root / candidate / f"q{index}-report.json",
+                label=f"{candidate} {gate} report",
+            )
+            for index, gate in enumerate(GATES)
+        }
         manifest = _load_artifact_json(
             manifest_path,
             label=f"{candidate} runtime manifest",
@@ -1987,16 +2296,15 @@ def collect_matrix_evidence(
             f"{candidate} gate evidence fields drift",
         )
         _require(
-            type(manifest_gates) is dict
-            and all(
-                type(manifest_gates.get(gate)) is dict
-                and manifest_gates[gate].get("status") == "passed"
-                and manifest_gates[gate].get("report_sha256") == gates[gate]
-                for gate in GATES
-            )
-            and manifest_gates.get("Q7")
-            == {"status": "blocked", "report_sha256": None},
+            type(manifest_gates) is dict,
             f"{candidate} manifest gate evidence drift",
+        )
+        _validate_precheck_artifacts(
+            candidate=candidate,
+            gate_reports=gate_reports,
+            summary=summary,
+            audit_gates=gates,
+            manifest_gates=manifest_gates,
         )
         audit_file_sha256, _ = _sha256_regular_file(
             audit_path,
@@ -2234,35 +2542,6 @@ def load_review_bundle(
     return bundle
 
 
-def claim_review_session(review_directory: Path, nonce: str) -> None:
-    """Atomically consume one random review challenge before target execution."""
-
-    _validate_sha256(nonce, "review session nonce")
-    marker = review_directory / ".q7-review-session-consumed.json"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    try:
-        descriptor = os.open(marker, flags, 0o600)
-    except FileExistsError as exc:
-        raise VerificationError(
-            "review session challenge was already consumed"
-        ) from exc
-    try:
-        payload = canonical_json_bytes(
-            {
-                "schema": "sanhuo.trusted_q7_review_session_claim.v1",
-                "review_session_nonce": nonce,
-            }
-        )
-        offset = 0
-        while offset < len(payload):
-            written = os.write(descriptor, payload[offset:])
-            _require(written > 0, "review session claim write was incomplete")
-            offset += written
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def write_new_result(output: Path, result: Mapping[str, Any]) -> None:
     _require(not output.exists(), "qualification result already exists")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -2438,7 +2717,6 @@ def verify_reviews(
         and reports["verifier"]["candidates"] == bundle["matrix_evidence"],
         "review reports do not match their prompt bundle",
     )
-    claim_review_session(review_directory, review_session_nonce)
     evidence, tracked_files = _execute_fresh_matrix(
         target_commit=target_commit,
         tool_workspace=tool_workspace,

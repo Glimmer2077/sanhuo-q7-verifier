@@ -49,6 +49,7 @@ class IsolatedDriverTests(unittest.TestCase):
     def test_driver_puts_platformio_state_inside_runtime_home(self) -> None:
         environment = {
             "SANHUO_Q7_RUNTIME_HOME": "/tmp/runtime",
+            "SANHUO_Q7_OUTPUT_ROOT": "/tmp/output",
             "SANHUO_Q7_CHECKOUT": "/tmp/checkout",
             "SANHUO_Q7_PLATFORMIO_ROOT": "/tmp/locked-platformio",
             "SANHUO_Q7_IDF_ROOT": "/tmp/idf",
@@ -94,6 +95,7 @@ class IsolatedDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = root / "runtime"
+            output = root / "output"
             cli = root / "cli_phase2.py"
             cli.write_text("# fixture\n", encoding="utf-8")
             with (
@@ -102,6 +104,7 @@ class IsolatedDriverTests(unittest.TestCase):
                     os.environ,
                     {
                         "SANHUO_Q7_RUNTIME_HOME": str(runtime),
+                        "SANHUO_Q7_OUTPUT_ROOT": str(output),
                     },
                     clear=True,
                 ),
@@ -109,6 +112,8 @@ class IsolatedDriverTests(unittest.TestCase):
                 isolated_driver.prepare_runtime_layout()
 
             self.assertTrue((runtime / "platformio-core/cache").is_dir())
+            self.assertTrue((output / "artifacts").is_dir())
+            self.assertTrue((output / "binaries").is_dir())
             self.assertFalse((runtime / "platformio-core/platforms").exists())
             self.assertFalse((runtime / "platformio-core/packages").exists())
 

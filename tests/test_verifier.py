@@ -86,6 +86,82 @@ class TrustedVerifierTests(unittest.TestCase):
                 tracked_manifest=tracked,
             )
 
+    def test_precheck_reports_and_summary_are_directly_validated(self) -> None:
+        gate_reports = {
+            gate: {
+                "schema": "sanhuo.motion_phase2_gate_report.v1",
+                "candidate_id": "MF-P2",
+                "gate": gate,
+                "status": "passed",
+                "evidence_sha256": f"{index + 1:x}" * 64,
+                "covered": ["direct evidence"],
+                "not_covered": [],
+            }
+            for index, gate in enumerate(verifier.GATES)
+        }
+        manifest_gates = {
+            gate: {
+                "status": "passed",
+                "report_sha256": gate_reports[gate]["evidence_sha256"],
+            }
+            for gate in verifier.GATES
+        }
+        manifest_gates["Q7"] = {
+            "status": "blocked",
+            "report_sha256": None,
+        }
+        summary_gates = copy.deepcopy(manifest_gates)
+        summary_gates["Q7"]["reason"] = "independent review credential is absent"
+        summary = {
+            "schema": "sanhuo.motion_phase2_qualification_summary.v2",
+            "candidate_id": "MF-P2",
+            "precheck_status": "passed",
+            "gate_results": summary_gates,
+            "q7_receipt_sha256": None,
+            "review_mode": None,
+            "assurance_limitations": [
+                "Q7 independent review has not produced a trusted receipt"
+            ],
+            "known_risks": ["offline Q0-Q6 precheck is not Q7 qualification"],
+            "non_blocking_findings": [],
+            "offline_qualified": False,
+            "hardware_test_eligible": False,
+            "flashable": False,
+            "hardware_authorized": False,
+            "hardware_commands": [],
+        }
+        arguments = {
+            "candidate": "MF-P2",
+            "gate_reports": gate_reports,
+            "summary": summary,
+            "audit_gates": {
+                gate: gate_reports[gate]["evidence_sha256"] for gate in verifier.GATES
+            },
+            "manifest_gates": manifest_gates,
+        }
+
+        verifier._validate_precheck_artifacts(**arguments)
+
+        tampered_reports = copy.deepcopy(gate_reports)
+        tampered_reports["Q3"]["covered"] = []
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Q3 report is invalid",
+        ):
+            verifier._validate_precheck_artifacts(
+                **{**arguments, "gate_reports": tampered_reports}
+            )
+
+        tampered_summary = copy.deepcopy(summary)
+        tampered_summary["hardware_authorized"] = True
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "qualification summary is invalid",
+        ):
+            verifier._validate_precheck_artifacts(
+                **{**arguments, "summary": tampered_summary}
+            )
+
     def approved_report(
         self,
         role: str,
@@ -211,6 +287,7 @@ class TrustedVerifierTests(unittest.TestCase):
             cache=Path("/tmp/cache"),
             trusted_root=Path("/tmp/trusted"),
             runtime_home=Path("/tmp/runtime-home"),
+            output_root=Path("/tmp/output"),
             test_python=Path("/tmp/test-python"),
             test_user_site_root=Path("/tmp/test-user-site"),
             homebrew_root=Path("/opt/homebrew"),
@@ -237,6 +314,19 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn("GIT_DIR=/private/tmp/target.git", " ".join(command))
         self.assertIn("CACHE=/private/tmp/cache", " ".join(command))
         self.assertIn("RUNTIME_HOME=/private/tmp/runtime-home", " ".join(command))
+        self.assertIn("OUTPUT_ROOT=/private/tmp/output", " ".join(command))
+        self.assertIn(
+            "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-P2",
+            " ".join(command),
+        )
+        self.assertIn(
+            "ACTION_BINARY_ROOT=/private/tmp/output/binaries/MF-P2",
+            " ".join(command),
+        )
+        self.assertIn(
+            "ACTION_OUTPUT_00=/private/tmp/output/artifacts/MF-P2/build-report.json",
+            " ".join(command),
+        )
         self.assertIn(
             "SANHUO_MATRIX_TEST_PYTHON=/private/tmp/test-python",
             command,
@@ -257,6 +347,40 @@ class TrustedVerifierTests(unittest.TestCase):
             str((Path("/tmp/trusted") / "isolated_driver.py").resolve()),
             command,
         )
+        qualify_command = verifier.sandbox_command(
+            checkout=Path("/tmp/checkout"),
+            git_dir=Path("/tmp/target.git"),
+            cache=Path("/tmp/cache"),
+            trusted_root=Path("/tmp/trusted"),
+            runtime_home=Path("/tmp/runtime-home"),
+            output_root=Path("/tmp/output"),
+            test_python=Path("/tmp/test-python"),
+            test_user_site_root=Path("/tmp/test-user-site"),
+            homebrew_root=Path("/opt/homebrew"),
+            host_cxx=Path("/usr/bin/c++"),
+            tool_roots=(
+                Path("/tmp/python"),
+                Path("/tmp/platformio"),
+                Path("/tmp/idf"),
+                Path("/tmp/espressif"),
+            ),
+            driver_mode="action",
+            candidate="MF-P2",
+            action="qualify",
+        )
+        self.assertIn(
+            "ACTION_ARTIFACT_ROOT=/private/tmp/runtime-home/unused-artifacts",
+            " ".join(qualify_command),
+        )
+        for filename in (
+            "manifest.generated.json",
+            "qualification-summary.json",
+            *(f"q{index}-report.json" for index in range(7)),
+        ):
+            self.assertIn(
+                f"/private/tmp/output/artifacts/MF-P2/{filename}",
+                " ".join(qualify_command),
+            )
 
     def test_sandbox_profile_never_allows_network_or_device_tree(self) -> None:
         profile = (Path(__file__).parents[1] / "sanhuo-q7.sb").read_text(
@@ -285,6 +409,20 @@ class TrustedVerifierTests(unittest.TestCase):
             '(allow file-write*\n  (subpath (param "CHECKOUT"))',
             profile,
         )
+        self.assertIn("(allow process-exec\n", profile)
+        self.assertIn('(subpath (param "EXEC_PYTHON_ROOT"))', profile)
+        self.assertNotIn(
+            '(subpath (param "CHECKOUT"))\n  (subpath',
+            profile.split("(allow process-exec", 1)[1].split(")", 1)[0],
+        )
+        self.assertNotIn(
+            '(subpath (param "CACHE"))',
+            profile.split("(allow process-exec", 1)[1].split("(allow process-fork)", 1)[
+                0
+            ],
+        )
+        self.assertIn('(subpath (param "ACTION_ARTIFACT_ROOT"))', profile)
+        self.assertIn('(subpath (param "ACTION_BINARY_ROOT"))', profile)
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/dev/urandom")', profile)
 
@@ -298,11 +436,21 @@ class TrustedVerifierTests(unittest.TestCase):
             secret = root / "operator-secret.txt"
             secret.write_text("must stay unreadable", encoding="utf-8")
             paths = {
-                name: root / name for name in ("checkout", "git", "cache", "runtime")
+                name: root / name
+                for name in ("checkout", "git", "cache", "runtime", "output")
             }
             for path in paths.values():
                 path.mkdir()
             (paths["runtime"] / "tmp").mkdir()
+            action_artifacts = paths["output"] / "artifacts/MF-P2"
+            action_binaries = paths["output"] / "binaries/MF-P2"
+            prior_artifacts = paths["output"] / "artifacts/MF-T0"
+            action_artifacts.mkdir(parents=True)
+            action_binaries.mkdir(parents=True)
+            prior_artifacts.mkdir(parents=True)
+            untrusted_executable = paths["checkout"] / "untrusted-tool"
+            untrusted_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            untrusted_executable.chmod(0o755)
             protected_input = paths["cache"] / "platforms/espressif32/platform.py"
             protected_input.parent.mkdir(parents=True)
             protected_input.write_text("locked", encoding="utf-8")
@@ -325,7 +473,31 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-D",
                 f"RUNTIME_HOME={paths['runtime']}",
                 "-D",
+                f"OUTPUT_ROOT={paths['output']}",
+                "-D",
+                f"ACTION_ARTIFACT_ROOT={paths['runtime'] / 'unused-artifacts'}",
+                "-D",
+                f"ACTION_BINARY_ROOT={paths['runtime'] / 'unused-binaries'}",
+                *[
+                    item
+                    for index in range(verifier.MAX_ACTION_OUTPUT_FILES)
+                    for item in (
+                        "-D",
+                        (
+                            f"ACTION_OUTPUT_{index:02d}="
+                            f"{action_artifacts / 'current.json'}"
+                            if index == 0
+                            else (
+                                f"ACTION_OUTPUT_{index:02d}="
+                                f"{paths['runtime'] / f'unused-output-{index:02d}'}"
+                            )
+                        ),
+                    )
+                ],
+                "-D",
                 f"SEALED_INPUT={paths['runtime']}",
+                "-D",
+                f"XCODE_ROOT={python_root}",
                 "-D",
                 f"PYTHON_ROOT={python_root}",
                 "-D",
@@ -340,6 +512,25 @@ class TrustedVerifierTests(unittest.TestCase):
                 f"ESPRESSIF_ROOT={paths['cache']}",
                 "-D",
                 f"TEST_USER_SITE_ROOT={paths['cache']}",
+                *[
+                    item
+                    for name in (
+                        "EXEC_PYTHON_ROOT",
+                        "EXEC_PIO_PLATFORM",
+                        "EXEC_PIO_FRAMEWORK",
+                        "EXEC_PIO_XTENSA",
+                        "EXEC_PIO_RISCV",
+                        "EXEC_PIO_ESPTOOL",
+                        "EXEC_PIO_SCONS",
+                        "EXEC_IDF_ROOT",
+                        "EXEC_IDF_PYTHON",
+                        "EXEC_IDF_XTENSA",
+                        "EXEC_HOMEBREW_PYTHON",
+                        "EXEC_HOMEBREW_CMAKE",
+                        "EXEC_HOMEBREW_NINJA",
+                    )
+                    for item in ("-D", f"{name}={python_root}")
+                ],
                 "/usr/bin/env",
                 "-i",
                 f"TMPDIR={paths['runtime'] / 'tmp'}",
@@ -347,7 +538,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-c",
                 (
                     "from pathlib import Path\n"
-                    "import tempfile\n"
+                    "import subprocess, tempfile\n"
                     "handle=tempfile.TemporaryDirectory(prefix='sandbox-test-')\n"
                     f"secret=Path({json.dumps(str(secret))})\n"
                     "try:\n"
@@ -377,6 +568,22 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    raise RuntimeError('lock symlink escaped exact write rule')\n"
                     "if tool_input.read_text(encoding='utf-8') != 'locked':\n"
                     "    raise RuntimeError('PlatformIO input changed through lock')\n"
+                    f"current=Path({json.dumps(str(action_artifacts / 'current.json'))})\n"
+                    "current.write_text('current', encoding='utf-8')\n"
+                    f"prior=Path({json.dumps(str(prior_artifacts / 'old.json'))})\n"
+                    "try:\n"
+                    "    prior.write_text('tampered', encoding='utf-8')\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('another candidate became writable')\n"
+                    f"untrusted=Path({json.dumps(str(untrusted_executable))})\n"
+                    "try:\n"
+                    "    subprocess.run([str(untrusted)], check=False)\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('reviewed checkout became executable')\n"
                     "handle.cleanup()\n"
                 ),
             ]
@@ -467,6 +674,49 @@ class TrustedVerifierTests(unittest.TestCase):
                 b"elf",
             )
 
+    def test_trusted_action_delta_rejects_cross_stage_changes(self) -> None:
+        build_files = {
+            path.format(candidate="MF-P2"): "a" * 64
+            for path in verifier.ACTION_ADDED_FILES["build"]
+        }
+        receipt = verifier._validate_action_delta(
+            candidate="MF-P2",
+            action="build",
+            before={},
+            after=build_files,
+        )
+        self.assertEqual(receipt["added_files"], sorted(build_files))
+
+        unexpected = dict(build_files)
+        unexpected["artifacts/MF-P2/q0-report.json"] = "b" * 64
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "file delta drift",
+        ):
+            verifier._validate_action_delta(
+                candidate="MF-P2",
+                action="build",
+                before={},
+                after=unexpected,
+            )
+
+        qualify_files = {
+            path.format(candidate="MF-P2"): "c" * 64
+            for path in verifier.ACTION_ADDED_FILES["qualify"]
+        }
+        tampered_before = dict(build_files)
+        tampered_before["artifacts/MF-P2/build-report.json"] = "d" * 64
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "changed prior persistent evidence",
+        ):
+            verifier._validate_action_delta(
+                candidate="MF-P2",
+                action="qualify",
+                before=build_files,
+                after={**tampered_before, **qualify_files},
+            )
+
     def test_operator_review_directory_cannot_overlap_readable_roots(
         self,
     ) -> None:
@@ -518,17 +768,19 @@ class TrustedVerifierTests(unittest.TestCase):
                     git_home=root,
                 )
 
-    def test_random_review_session_can_be_claimed_only_once(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            review = Path(temporary)
+    def test_review_challenge_is_idempotent_for_same_immutable_tuple(self) -> None:
+        arguments = {
+            "role": "primary",
+            "target_commit": "a" * 40,
+            "verifier_commit": "b" * 40,
+            "review_session_nonce": "d" * 64,
+            "evidence": self.matrix_evidence(),
+        }
 
-            verifier.claim_review_session(review, "d" * 64)
-
-            with self.assertRaisesRegex(
-                verifier.VerificationError,
-                "already consumed",
-            ):
-                verifier.claim_review_session(review, "d" * 64)
+        self.assertEqual(
+            verifier.review_challenge(**arguments),
+            verifier.review_challenge(**arguments),
+        )
 
     def test_reports_are_snapshotted_before_untrusted_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -109,6 +109,7 @@ def derive_capabilities(
 
 def _closed_environment() -> dict[str, str]:
     runtime_home = os.environ["SANHUO_Q7_RUNTIME_HOME"]
+    output_root = os.environ["SANHUO_Q7_OUTPUT_ROOT"]
     checkout = os.environ["SANHUO_Q7_CHECKOUT"]
     platformio_root = os.environ["SANHUO_Q7_PLATFORMIO_ROOT"]
     idf_root = os.environ["SANHUO_Q7_IDF_ROOT"]
@@ -117,7 +118,6 @@ def _closed_environment() -> dict[str, str]:
     test_user_site_root = os.environ["SANHUO_Q7_TEST_USER_SITE_ROOT"]
     homebrew_root = os.environ["SANHUO_Q7_HOMEBREW_ROOT"]
     host_cxx = os.environ["SANHUO_Q7_HOST_CXX"]
-    output_root = f"{runtime_home}/output"
     return {
         "HOME": runtime_home,
         "PATH": (
@@ -171,8 +171,9 @@ def prepare_runtime_layout() -> None:
     if not CLI.is_file():
         raise RuntimeError("target Q7 CLI is missing")
     runtime_home = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
-    (runtime_home / "output/artifacts").mkdir(parents=True, exist_ok=True)
-    (runtime_home / "output/binaries").mkdir(parents=True, exist_ok=True)
+    output_root = Path(os.environ["SANHUO_Q7_OUTPUT_ROOT"])
+    (output_root / "artifacts").mkdir(parents=True, exist_ok=True)
+    (output_root / "binaries").mkdir(parents=True, exist_ok=True)
     (runtime_home / "platformio-core/cache").mkdir(parents=True, exist_ok=True)
 
 

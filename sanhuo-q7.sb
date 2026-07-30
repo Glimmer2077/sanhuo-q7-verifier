@@ -3,8 +3,29 @@
 ; Deny everything unless it is required for an offline build or host test.
 (deny default)
 
-; Child processes are required for git, pytest, compilers and build tools.
-(allow process-exec)
+; Child processes are required, but executable images are limited to Apple's
+; trusted OS/Xcode roots and the exact toolchain closures prevalidated by the
+; outer verifier. The reviewed checkout, caches and unrelated Homebrew content
+; are never executable.
+(allow process-exec
+  (subpath "/bin")
+  (subpath "/usr/bin")
+  (subpath "/usr/sbin")
+  (subpath "/usr/libexec")
+  (subpath (param "XCODE_ROOT"))
+  (subpath (param "EXEC_PYTHON_ROOT"))
+  (subpath (param "EXEC_PIO_PLATFORM"))
+  (subpath (param "EXEC_PIO_FRAMEWORK"))
+  (subpath (param "EXEC_PIO_XTENSA"))
+  (subpath (param "EXEC_PIO_RISCV"))
+  (subpath (param "EXEC_PIO_ESPTOOL"))
+  (subpath (param "EXEC_PIO_SCONS"))
+  (subpath (param "EXEC_IDF_ROOT"))
+  (subpath (param "EXEC_IDF_PYTHON"))
+  (subpath (param "EXEC_IDF_XTENSA"))
+  (subpath (param "EXEC_HOMEBREW_PYTHON"))
+  (subpath (param "EXEC_HOMEBREW_CMAKE"))
+  (subpath (param "EXEC_HOMEBREW_NINJA")))
 (allow process-fork)
 (allow signal)
 (allow sysctl-read)
@@ -31,6 +52,7 @@
   (subpath (param "GIT_DIR"))
   (subpath (param "CACHE"))
   (subpath (param "TRUSTED_ROOT"))
+  (subpath (param "OUTPUT_ROOT"))
   (subpath (param "SEALED_INPUT"))
   (subpath (param "PYTHON_ROOT"))
   (subpath (param "PLATFORMIO_ROOT"))
@@ -41,11 +63,24 @@
   (literal "/dev/random")
   (literal "/dev/urandom"))
 
-; Only the disposable HOME/output root and PlatformIO's two ephemeral
-; concurrency lock files can be modified. The reviewed checkout, its separate
-; Git directory, caches and all actual toolchain inputs remain read-only.
+; Only the disposable HOME, this action's candidate-specific output roots and
+; PlatformIO's two ephemeral concurrency lock files can be modified. Prior
+; candidates, the reviewed checkout, Git data, caches and toolchain inputs are
+; read-only. The trusted parent separately enforces the exact per-action file
+; delta inside these candidate roots.
 (allow file-write*
   (subpath (param "RUNTIME_HOME"))
+  (subpath (param "ACTION_ARTIFACT_ROOT"))
+  (subpath (param "ACTION_BINARY_ROOT"))
+  (literal (param "ACTION_OUTPUT_00"))
+  (literal (param "ACTION_OUTPUT_01"))
+  (literal (param "ACTION_OUTPUT_02"))
+  (literal (param "ACTION_OUTPUT_03"))
+  (literal (param "ACTION_OUTPUT_04"))
+  (literal (param "ACTION_OUTPUT_05"))
+  (literal (param "ACTION_OUTPUT_06"))
+  (literal (param "ACTION_OUTPUT_07"))
+  (literal (param "ACTION_OUTPUT_08"))
   (literal (param "PLATFORMIO_PLATFORM_LOCK"))
   (literal (param "PLATFORMIO_PACKAGE_LOCK"))
   (literal "/dev/null"))
