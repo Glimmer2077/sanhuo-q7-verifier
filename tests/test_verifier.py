@@ -221,6 +221,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 Path("/tmp/idf"),
                 Path("/tmp/espressif"),
             ),
+            platformio_bindings=Path("/tmp/runtime-home/platformio-bindings"),
             driver_mode="action",
             candidate="MF-P2",
             action="build",
@@ -246,6 +247,10 @@ class TrustedVerifierTests(unittest.TestCase):
             command,
         )
         self.assertIn(
+            "PLATFORMIO_BINDINGS=/private/tmp/runtime-home/platformio-bindings",
+            " ".join(command),
+        )
+        self.assertIn(
             str((Path("/tmp/trusted") / "isolated_driver.py").resolve()),
             command,
         )
@@ -266,9 +271,14 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertNotIn('(allow file-read*\n  (subpath "/dev")', profile)
         self.assertIn('(subpath (param "GIT_DIR"))', profile)
         self.assertIn('(subpath (param "SEALED_INPUT"))', profile)
+        self.assertIn('(subpath (param "PLATFORMIO_BINDINGS"))', profile)
         self.assertNotIn('(allow file-write*\n  (subpath (param "GIT_DIR"))', profile)
         self.assertNotIn(
             '(allow file-write*\n  (subpath (param "SEALED_INPUT"))',
+            profile,
+        )
+        self.assertIn(
+            '(deny file-write*\n  (subpath (param "PLATFORMIO_BINDINGS"))',
             profile,
         )
         self.assertNotIn(
@@ -293,6 +303,10 @@ class TrustedVerifierTests(unittest.TestCase):
             for path in paths.values():
                 path.mkdir()
             (paths["runtime"] / "tmp").mkdir()
+            bindings = paths["runtime"] / "bindings"
+            bindings.mkdir()
+            protected_binding = bindings / "fixed-link"
+            protected_binding.write_text("locked", encoding="utf-8")
             profile = (Path(__file__).parents[1] / "sanhuo-q7.sb").resolve()
             python_root = Path(sys.executable).resolve().parent.parent
             command = [
@@ -316,6 +330,8 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-D",
                 f"PLATFORMIO_ROOT={paths['cache']}",
                 "-D",
+                f"PLATFORMIO_BINDINGS={paths['runtime'] / 'bindings'}",
+                "-D",
                 f"IDF_ROOT={paths['cache']}",
                 "-D",
                 f"ESPRESSIF_ROOT={paths['cache']}",
@@ -337,6 +353,13 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    pass\n"
                     "else:\n"
                     "    raise RuntimeError('sibling temp file became readable')\n"
+                    f"binding=Path({json.dumps(str(protected_binding))})\n"
+                    "try:\n"
+                    "    binding.write_text('tampered', encoding='utf-8')\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('PlatformIO binding became writable')\n"
                     "handle.cleanup()\n"
                 ),
             ]
@@ -425,6 +448,40 @@ class TrustedVerifierTests(unittest.TestCase):
             self.assertEqual(
                 (sealed / "binaries/MF-P2/firmware.elf").read_bytes(),
                 b"elf",
+            )
+
+    def test_parent_creates_only_fixed_platformio_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            platformio = root / "platformio"
+            runtime.mkdir()
+            for name in verifier.PLATFORMIO_PLATFORM_INPUTS:
+                (platformio / "platforms" / name).mkdir(parents=True)
+            for name in verifier.PLATFORMIO_PACKAGE_INPUTS:
+                (platformio / "packages" / name).mkdir(parents=True)
+
+            bindings = verifier._prepare_readonly_platformio_bindings(
+                runtime,
+                platformio,
+            )
+
+            self.assertEqual(
+                {path.name for path in (bindings / "platforms").iterdir()},
+                set(verifier.PLATFORMIO_PLATFORM_INPUTS),
+            )
+            self.assertEqual(
+                {path.name for path in (bindings / "packages").iterdir()},
+                set(verifier.PLATFORMIO_PACKAGE_INPUTS),
+            )
+            self.assertTrue(
+                all(
+                    path.is_symlink()
+                    for path in (
+                        list((bindings / "platforms").iterdir())
+                        + list((bindings / "packages").iterdir())
+                    )
+                )
             )
 
     def test_operator_review_directory_cannot_overlap_readable_roots(

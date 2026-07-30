@@ -22,6 +22,14 @@ from typing import Any, Final
 REPOSITORY: Final = "Glimmer2077/sanhuo-robot"
 VERIFIER_REPOSITORY: Final = "Glimmer2077/sanhuo-q7-verifier"
 CANDIDATES: Final = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
+PLATFORMIO_PLATFORM_INPUTS: Final = ("espressif32",)
+PLATFORMIO_PACKAGE_INPUTS: Final = (
+    "framework-arduinoespressif32",
+    "toolchain-xtensa-esp32s3",
+    "toolchain-riscv32-esp",
+    "tool-esptoolpy",
+    "tool-scons",
+)
 TARGET_REQUIRED_COMMITS: Final = ("8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",)
 TRUSTED_TOOLCHAIN_LOCK_SHA256: Final = (
     "922619a2f952e671e9e1437ae169c5fe40e3460d1d4ffdee05bd144bac6e03a3"
@@ -660,6 +668,7 @@ def sandbox_command(
     homebrew_root: Path,
     host_cxx: Path,
     tool_roots: tuple[Path, Path, Path, Path],
+    platformio_bindings: Path,
     driver_mode: str,
     candidate: str | None = None,
     action: str | None = None,
@@ -704,6 +713,8 @@ def sandbox_command(
         "-D",
         f"PLATFORMIO_ROOT={platformio_root}",
         "-D",
+        f"PLATFORMIO_BINDINGS={platformio_bindings.resolve()}",
+        "-D",
         f"IDF_ROOT={idf_root}",
         "-D",
         f"ESPRESSIF_ROOT={espressif_root}",
@@ -729,6 +740,7 @@ def sandbox_command(
         f"SANHUO_Q7_DRIVER_MODE={driver_mode}",
         f"SANHUO_Q7_SEALED_INPUT={sealed_input}",
         f"SANHUO_Q7_PLATFORMIO_ROOT={platformio_root}",
+        (f"SANHUO_Q7_PLATFORMIO_BINDINGS_ROOT={platformio_bindings.resolve()}"),
         f"SANHUO_Q7_PLATFORMIO_EXECUTABLE={python_root / 'bin/platformio'}",
         f"SANHUO_Q7_IDF_ROOT={idf_root}",
         f"SANHUO_Q7_ESPRESSIF_ROOT={espressif_root}",
@@ -1639,6 +1651,41 @@ def _snapshot_persistent_matrix_output(
                 )
 
 
+def _prepare_readonly_platformio_bindings(
+    runtime_home: Path,
+    platformio_root: Path,
+) -> Path:
+    """Create the fixed links before the sandbox makes their directory read-only."""
+
+    bindings = runtime_home / "platformio-bindings"
+    _require(not bindings.exists(), "PlatformIO bindings already exist")
+    platforms = bindings / "platforms"
+    packages = bindings / "packages"
+    platforms.mkdir(parents=True, mode=0o700)
+    packages.mkdir(mode=0o700)
+    for name in PLATFORMIO_PLATFORM_INPUTS:
+        source = platformio_root / "platforms" / name
+        _require(
+            source.is_dir() and not source.is_symlink(),
+            "locked PlatformIO platform input is invalid",
+        )
+        (platforms / name).symlink_to(
+            source.resolve(),
+            target_is_directory=True,
+        )
+    for name in PLATFORMIO_PACKAGE_INPUTS:
+        source = platformio_root / "packages" / name
+        _require(
+            source.is_dir() and not source.is_symlink(),
+            "locked PlatformIO package input is invalid",
+        )
+        (packages / name).symlink_to(
+            source.resolve(),
+            target_is_directory=True,
+        )
+    return bindings
+
+
 def run_isolated_matrix(
     *,
     checkout: Path,
@@ -1664,6 +1711,10 @@ def run_isolated_matrix(
                 previous_snapshot / "output",
                 stage_home / "output",
             )
+        platformio_bindings = _prepare_readonly_platformio_bindings(
+            stage_home,
+            inputs.platformio_root,
+        )
         command = sandbox_command(
             checkout=checkout,
             git_dir=git_dir,
@@ -1680,6 +1731,7 @@ def run_isolated_matrix(
                 inputs.idf_root,
                 inputs.espressif_root,
             ),
+            platformio_bindings=platformio_bindings,
             driver_mode="action",
             candidate=candidate,
             action=action,
@@ -1723,6 +1775,10 @@ def run_isolated_matrix(
     evidence_home = runtime_home / "evidence"
     evidence_home.mkdir(mode=0o700)
     (evidence_home / "tmp").mkdir(mode=0o700)
+    platformio_bindings = _prepare_readonly_platformio_bindings(
+        evidence_home,
+        inputs.platformio_root,
+    )
     command = sandbox_command(
         checkout=checkout,
         git_dir=git_dir,
@@ -1739,6 +1795,7 @@ def run_isolated_matrix(
             inputs.idf_root,
             inputs.espressif_root,
         ),
+        platformio_bindings=platformio_bindings,
         driver_mode="evidence",
         sealed_input=previous_snapshot,
     )

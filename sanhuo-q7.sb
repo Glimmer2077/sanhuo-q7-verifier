@@ -34,6 +34,7 @@
   (subpath (param "SEALED_INPUT"))
   (subpath (param "PYTHON_ROOT"))
   (subpath (param "PLATFORMIO_ROOT"))
+  (subpath (param "PLATFORMIO_BINDINGS"))
   (subpath (param "IDF_ROOT"))
   (subpath (param "ESPRESSIF_ROOT"))
   (subpath (param "TEST_USER_SITE_ROOT"))
@@ -46,5 +47,7 @@
 (allow file-write*
   (subpath (param "RUNTIME_HOME"))
   (literal "/dev/null"))
+(deny file-write*
+  (subpath (param "PLATFORMIO_BINDINGS")))
 
 ; There is deliberately no network, IOKit, USB, serial or broad /dev allow.
