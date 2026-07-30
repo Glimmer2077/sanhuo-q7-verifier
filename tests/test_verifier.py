@@ -245,6 +245,34 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertNotIn("SSH_AUTH_SOCK", environment)
         self.assertEqual(set(environment), verifier.GIT_ENVIRONMENT_FIELDS)
 
+    def test_trusted_command_failure_is_bounded_and_terminal_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(verifier.VerificationError) as raised:
+                verifier._run_trusted(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import sys;"
+                            "sys.stderr.buffer.write(b'\\x1b[31m' + b'x' * 5000);"
+                            "raise SystemExit(1)"
+                        ),
+                    ],
+                    cwd=None,
+                    environment={
+                        "HOME": temporary,
+                        "PATH": "/usr/bin:/bin",
+                    },
+                )
+
+        detail = str(raised.exception)
+        self.assertNotIn("\x1b", detail)
+        encoded = detail.split("stderr_tail_hex=", 1)[1]
+        self.assertEqual(
+            len(bytes.fromhex(encoded)),
+            verifier.MAX_TRUSTED_FAILURE_EXCERPT_BYTES,
+        )
+
     def test_target_checkout_uses_exact_local_commit_not_dirty_worktree(
         self,
     ) -> None:

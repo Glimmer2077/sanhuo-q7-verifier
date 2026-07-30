@@ -39,6 +39,7 @@ MAX_FINDINGS: Final = 100
 MAX_LINE_NUMBER: Final = 10_000_000
 MAX_TRACKED_FILES: Final = 100_000
 MAX_ACTION_OUTPUT_FILES: Final = 9
+MAX_TRUSTED_FAILURE_EXCERPT_BYTES: Final = 2048
 COMMIT_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 INSTANCE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$")
@@ -1761,10 +1762,10 @@ def _run_trusted(
             f"trusted command could not complete: {command[0]}"
         ) from exc
     if result.returncode != 0:
-        message = result.stderr.decode("utf-8", errors="replace").strip()
+        message = result.stderr[-MAX_TRUSTED_FAILURE_EXCERPT_BYTES:].hex()
         raise VerificationError(
             f"trusted command failed: {command[0]}"
-            + (f": {message[:500]}" if message else "")
+            + (f"; stderr_tail_hex={message}" if message else "")
         )
     return result
 
