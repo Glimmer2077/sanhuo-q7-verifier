@@ -411,6 +411,7 @@ class TrustedVerifierTests(unittest.TestCase):
         )
         self.assertIn("(allow process-exec\n", profile)
         self.assertIn('(subpath (param "EXEC_PYTHON_ROOT"))', profile)
+        self.assertIn('(subpath (param "RUNTIME_HOME"))', profile)
         self.assertNotIn(
             '(subpath (param "CHECKOUT"))\n  (subpath',
             profile.split("(allow process-exec", 1)[1].split(")", 1)[0],
@@ -584,6 +585,11 @@ class TrustedVerifierTests(unittest.TestCase):
                     "    pass\n"
                     "else:\n"
                     "    raise RuntimeError('reviewed checkout became executable')\n"
+                    f"generated=Path({json.dumps(str(paths['runtime'] / 'generated-tool'))})\n"
+                    "generated.write_text('#!/bin/sh\\nexit 0\\n', encoding='utf-8')\n"
+                    "generated.chmod(0o700)\n"
+                    "if subprocess.run([str(generated)], check=False).returncode != 0:\n"
+                    "    raise RuntimeError('generated sandbox test could not execute')\n"
                     "handle.cleanup()\n"
                 ),
             ]

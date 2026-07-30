@@ -5,13 +5,15 @@
 
 ; Child processes are required, but executable images are limited to Apple's
 ; trusted OS/Xcode roots and the exact toolchain closures prevalidated by the
-; outer verifier. The reviewed checkout, caches and unrelated Homebrew content
-; are never executable.
+; outer verifier. Disposable programs compiled inside this action may execute
+; with the same sandbox restrictions. The reviewed checkout, caches and
+; unrelated Homebrew content are never executable.
 (allow process-exec
   (subpath "/bin")
   (subpath "/usr/bin")
   (subpath "/usr/sbin")
   (subpath "/usr/libexec")
+  (subpath (param "RUNTIME_HOME"))
   (subpath (param "XCODE_ROOT"))
   (subpath (param "EXEC_PYTHON_ROOT"))
   (subpath (param "EXEC_PIO_PLATFORM"))
