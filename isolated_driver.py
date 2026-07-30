@@ -22,6 +22,7 @@ CLI = Path(
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_SINGLE_FAILURE_EXCERPT_BYTES = 180
 MAX_SPLIT_FAILURE_EXCERPT_BYTES = 80
+XCODE_DEVELOPER_ROOT = "/Applications/Xcode.app/Contents/Developer"
 
 
 def matrix_commands() -> list[list[str]]:
@@ -128,6 +129,7 @@ def _closed_environment() -> dict[str, str]:
         ),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        "DEVELOPER_DIR": XCODE_DEVELOPER_ROOT,
         "TMPDIR": f"{runtime_home}/tmp",
         "PYTHONNOUSERSITE": "1",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
