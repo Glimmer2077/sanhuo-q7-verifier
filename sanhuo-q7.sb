@@ -1,0 +1,44 @@
+(version 1)
+
+; Deny everything unless it is required for an offline build or host test.
+(deny default)
+
+; Child processes are required for git, pytest, compilers and build tools.
+(allow process-exec)
+(allow process-fork)
+(allow signal)
+(allow sysctl-read)
+(allow ipc-posix-shm)
+(allow file-read-metadata)
+
+; System runtimes are readable. User homes, volumes, temporary state and device
+; trees are denied again below, with only explicit trusted roots reopened.
+(allow file-read*)
+(deny file-read*
+  (subpath "/Users")
+  (subpath "/Volumes")
+  (subpath "/Network")
+  (subpath "/private/tmp")
+  (subpath "/private/var/folders")
+  (subpath "/dev"))
+(allow file-read*
+  (subpath (param "CHECKOUT"))
+  (subpath (param "GIT_DIR"))
+  (subpath (param "CACHE"))
+  (subpath (param "TRUSTED_ROOT"))
+  (subpath (param "PYTHON_ROOT"))
+  (subpath (param "PLATFORMIO_ROOT"))
+  (subpath (param "IDF_ROOT"))
+  (subpath (param "ESPRESSIF_ROOT"))
+  (subpath (param "TEST_USER_SITE_ROOT"))
+  (literal "/dev/null")
+  (literal "/dev/random")
+  (literal "/dev/urandom"))
+
+; Only the disposable HOME/output root can be modified. The reviewed checkout,
+; its separate Git directory, caches and toolchains remain read-only.
+(allow file-write*
+  (subpath (param "RUNTIME_HOME"))
+  (literal "/dev/null"))
+
+; There is deliberately no network, IOKit, USB, serial or broad /dev allow.
