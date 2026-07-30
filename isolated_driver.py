@@ -27,7 +27,8 @@ CLI = Path(
     "tools/motion_firmware_matrix/cli_phase2.py"
 )
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
-MAX_FAILURE_EXCERPT_BYTES = 80
+MAX_SINGLE_FAILURE_EXCERPT_BYTES = 180
+MAX_SPLIT_FAILURE_EXCERPT_BYTES = 80
 
 
 def matrix_commands() -> list[list[str]]:
@@ -283,10 +284,24 @@ def _process_group_still_exists(process_group: int) -> bool:
     return True
 
 
-def _failure_output_tail_hex(output: bytes) -> str:
+def _failure_output_tail_hex(output: bytes, *, limit: int) -> str:
     """Encode a bounded failure tail without relaying terminal control bytes."""
 
-    return output[-MAX_FAILURE_EXCERPT_BYTES:].hex()
+    return output[-limit:].hex()
+
+
+def _failure_stream_detail(stdout: bytes, stderr: bytes) -> str:
+    limit = (
+        MAX_SPLIT_FAILURE_EXCERPT_BYTES
+        if stdout and stderr
+        else MAX_SINGLE_FAILURE_EXCERPT_BYTES
+    )
+    return (
+        "stdout_tail_hex="
+        f"{_failure_output_tail_hex(stdout, limit=limit)}; "
+        "stderr_tail_hex="
+        f"{_failure_output_tail_hex(stderr, limit=limit)}"
+    )
 
 
 def main() -> int:
@@ -322,8 +337,7 @@ def main() -> int:
             raise RuntimeError(
                 f"target command failed: {command[-3]} {command[-1]}; "
                 f"returncode={result.returncode}; "
-                f"stdout_tail_hex={_failure_output_tail_hex(result.stdout)}; "
-                f"stderr_tail_hex={_failure_output_tail_hex(result.stderr)}"
+                f"{_failure_stream_detail(result.stdout, result.stderr)}"
             )
         if _process_group_still_exists(process.pid):
             os.killpg(process.pid, signal.SIGKILL)

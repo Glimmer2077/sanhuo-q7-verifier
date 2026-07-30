@@ -72,13 +72,18 @@ class IsolatedDriverTests(unittest.TestCase):
     def test_failure_detail_is_bounded_and_terminal_safe(self) -> None:
         raw = b"\x1b[31mboom\n" + (b"x" * 5000)
 
-        encoded = isolated_driver._failure_output_tail_hex(raw)
+        encoded = isolated_driver._failure_output_tail_hex(
+            raw,
+            limit=isolated_driver.MAX_SINGLE_FAILURE_EXCERPT_BYTES,
+        )
 
         self.assertNotIn("\x1b", encoded)
         self.assertEqual(
             bytes.fromhex(encoded),
-            raw[-isolated_driver.MAX_FAILURE_EXCERPT_BYTES :],
+            raw[-isolated_driver.MAX_SINGLE_FAILURE_EXCERPT_BYTES :],
         )
+        detail = isolated_driver._failure_stream_detail(b"", raw)
+        self.assertLessEqual(len(detail), 500)
 
     def test_runtime_layout_links_only_fixed_platformio_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
