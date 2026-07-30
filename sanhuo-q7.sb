@@ -34,7 +34,6 @@
   (subpath (param "SEALED_INPUT"))
   (subpath (param "PYTHON_ROOT"))
   (subpath (param "PLATFORMIO_ROOT"))
-  (subpath (param "PLATFORMIO_BINDINGS"))
   (subpath (param "IDF_ROOT"))
   (subpath (param "ESPRESSIF_ROOT"))
   (subpath (param "TEST_USER_SITE_ROOT"))
@@ -42,12 +41,13 @@
   (literal "/dev/random")
   (literal "/dev/urandom"))
 
-; Only the disposable HOME/output root can be modified. The reviewed checkout,
-; its separate Git directory, caches and toolchains remain read-only.
+; Only the disposable HOME/output root and PlatformIO's two ephemeral
+; concurrency lock files can be modified. The reviewed checkout, its separate
+; Git directory, caches and all actual toolchain inputs remain read-only.
 (allow file-write*
   (subpath (param "RUNTIME_HOME"))
+  (literal (param "PLATFORMIO_PLATFORM_LOCK"))
+  (literal (param "PLATFORMIO_PACKAGE_LOCK"))
   (literal "/dev/null"))
-(deny file-write*
-  (subpath (param "PLATFORMIO_BINDINGS")))
 
 ; There is deliberately no network, IOKit, USB, serial or broad /dev allow.

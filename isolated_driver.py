@@ -111,7 +111,6 @@ def _closed_environment() -> dict[str, str]:
     runtime_home = os.environ["SANHUO_Q7_RUNTIME_HOME"]
     checkout = os.environ["SANHUO_Q7_CHECKOUT"]
     platformio_root = os.environ["SANHUO_Q7_PLATFORMIO_ROOT"]
-    platformio_bindings_root = os.environ["SANHUO_Q7_PLATFORMIO_BINDINGS_ROOT"]
     idf_root = os.environ["SANHUO_Q7_IDF_ROOT"]
     espressif_root = os.environ["SANHUO_Q7_ESPRESSIF_ROOT"]
     test_python = os.environ["SANHUO_Q7_TEST_PYTHON"]
@@ -155,7 +154,6 @@ def _closed_environment() -> dict[str, str]:
         "SANHUO_MATRIX_BINARY_ROOT": f"{output_root}/binaries",
         "SANHUO_MATRIX_SOURCE_CACHE_ROOT": (f"{os.environ['SANHUO_Q7_CACHE']}/sources"),
         "SANHUO_MATRIX_PLATFORMIO_ROOT": platformio_root,
-        "SANHUO_MATRIX_PLATFORMIO_BINDINGS_ROOT": platformio_bindings_root,
         "SANHUO_MATRIX_PLATFORMIO_EXECUTABLE": os.environ[
             "SANHUO_Q7_PLATFORMIO_EXECUTABLE"
         ],

@@ -51,7 +51,6 @@ class IsolatedDriverTests(unittest.TestCase):
             "SANHUO_Q7_RUNTIME_HOME": "/tmp/runtime",
             "SANHUO_Q7_CHECKOUT": "/tmp/checkout",
             "SANHUO_Q7_PLATFORMIO_ROOT": "/tmp/locked-platformio",
-            "SANHUO_Q7_PLATFORMIO_BINDINGS_ROOT": "/tmp/readonly-bindings",
             "SANHUO_Q7_IDF_ROOT": "/tmp/idf",
             "SANHUO_Q7_ESPRESSIF_ROOT": "/tmp/espressif",
             "SANHUO_Q7_TEST_PYTHON": "/tmp/python",
@@ -72,10 +71,6 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertEqual(
             closed["SANHUO_MATRIX_PLATFORMIO_ROOT"],
             "/tmp/locked-platformio",
-        )
-        self.assertEqual(
-            closed["SANHUO_MATRIX_PLATFORMIO_BINDINGS_ROOT"],
-            "/tmp/readonly-bindings",
         )
         self.assertNotIn("PYTHONPATH", closed)
 
