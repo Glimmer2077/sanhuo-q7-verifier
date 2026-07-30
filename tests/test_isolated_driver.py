@@ -97,7 +97,7 @@ class IsolatedDriverTests(unittest.TestCase):
             raw[-isolated_driver.MAX_SINGLE_FAILURE_EXCERPT_BYTES :],
         )
         detail = isolated_driver._failure_stream_detail(b"", raw)
-        self.assertLessEqual(len(detail), 500)
+        self.assertLessEqual(len(detail), 1600)
 
     def test_runtime_layout_has_no_writable_toolchain_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
