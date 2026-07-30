@@ -72,7 +72,7 @@ class IsolatedDriverTests(unittest.TestCase):
     def test_failure_detail_is_bounded_and_terminal_safe(self) -> None:
         raw = b"\x1b[31mboom\n" + (b"x" * 5000)
 
-        encoded = isolated_driver._failure_stderr_tail_hex(raw)
+        encoded = isolated_driver._failure_output_tail_hex(raw)
 
         self.assertNotIn("\x1b", encoded)
         self.assertEqual(

@@ -27,7 +27,7 @@ CLI = Path(
     "tools/motion_firmware_matrix/cli_phase2.py"
 )
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
-MAX_FAILURE_EXCERPT_BYTES = 128
+MAX_FAILURE_EXCERPT_BYTES = 80
 
 
 def matrix_commands() -> list[list[str]]:
@@ -283,10 +283,10 @@ def _process_group_still_exists(process_group: int) -> bool:
     return True
 
 
-def _failure_stderr_tail_hex(stderr: bytes) -> str:
+def _failure_output_tail_hex(output: bytes) -> str:
     """Encode a bounded failure tail without relaying terminal control bytes."""
 
-    return stderr[-MAX_FAILURE_EXCERPT_BYTES:].hex()
+    return output[-MAX_FAILURE_EXCERPT_BYTES:].hex()
 
 
 def main() -> int:
@@ -322,8 +322,8 @@ def main() -> int:
             raise RuntimeError(
                 f"target command failed: {command[-3]} {command[-1]}; "
                 f"returncode={result.returncode}; "
-                f"stderr_sha256={hashlib.sha256(result.stderr).hexdigest()}; "
-                f"stderr_tail_hex={_failure_stderr_tail_hex(result.stderr)}"
+                f"stdout_tail_hex={_failure_output_tail_hex(result.stdout)}; "
+                f"stderr_tail_hex={_failure_output_tail_hex(result.stderr)}"
             )
         if _process_group_still_exists(process.pid):
             os.killpg(process.pid, signal.SIGKILL)
