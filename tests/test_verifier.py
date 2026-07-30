@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -40,17 +39,14 @@ class TrustedVerifierTests(unittest.TestCase):
                 "elf_sha256": "5" * 64,
                 "elf_semantic_sha256": "6" * 64,
                 "gate_evidence_sha256": {
-                    f"Q{index}": f"{index + 7:x}"[-1] * 64
-                    for index in range(7)
+                    f"Q{index}": f"{index + 7:x}"[-1] * 64 for index in range(7)
                 },
             }
             for candidate in verifier.CANDIDATES
         }
 
     def test_runtime_manifest_changes_only_fresh_evidence_fields(self) -> None:
-        tracked = {
-            field: None for field in verifier.RUNTIME_MANIFEST_DYNAMIC_FIELDS
-        }
+        tracked = {field: None for field in verifier.RUNTIME_MANIFEST_DYNAMIC_FIELDS}
         tracked.update(
             {
                 "candidate_id": "MF-P2",
@@ -105,21 +101,18 @@ class TrustedVerifierTests(unittest.TestCase):
                 role=role,
                 target_commit=target_commit,
                 verifier_commit=verifier_commit,
+                review_session_nonce="d" * 64,
                 evidence=evidence,
             ),
             "review_instance_id": f"{role}-unique-instance",
             "reviewed_commit_sha": target_commit,
             "candidates": evidence,
             "decision": "passed",
-            "reviewed_areas": {
-                area: True for area in verifier.REVIEWED_AREAS
-            },
+            "reviewed_areas": {area: True for area in verifier.REVIEWED_AREAS},
             "covered": ["检查了精确提交、可信验签器和四候选证据"],
             "not_covered": ["未直接检查真实硬件"],
             "known_risks": ["外部 AI 身份仍为自述"],
-            "attestations": {
-                item: True for item in verifier.ATTESTATIONS
-            },
+            "attestations": {item: True for item in verifier.ATTESTATIONS},
             "findings": [],
         }
 
@@ -228,6 +221,9 @@ class TrustedVerifierTests(unittest.TestCase):
                 Path("/tmp/idf"),
                 Path("/tmp/espressif"),
             ),
+            driver_mode="action",
+            candidate="MF-P2",
+            action="build",
         )
 
         self.assertEqual(command[:2], ["sandbox-exec", "-f"])
@@ -269,7 +265,12 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn('(subpath "/dev"))', profile)
         self.assertNotIn('(allow file-read*\n  (subpath "/dev")', profile)
         self.assertIn('(subpath (param "GIT_DIR"))', profile)
+        self.assertIn('(subpath (param "SEALED_INPUT"))', profile)
         self.assertNotIn('(allow file-write*\n  (subpath (param "GIT_DIR"))', profile)
+        self.assertNotIn(
+            '(allow file-write*\n  (subpath (param "SEALED_INPUT"))',
+            profile,
+        )
         self.assertNotIn(
             '(allow file-write*\n  (subpath (param "CHECKOUT"))',
             profile,
@@ -278,8 +279,7 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn('(literal "/dev/urandom")', profile)
 
     @unittest.skipUnless(
-        sys.platform == "darwin"
-        and Path("/usr/bin/sandbox-exec").is_file(),
+        sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file(),
         "requires the macOS sandbox used by the verifier",
     )
     def test_sandbox_runtime_home_cleanup_keeps_sibling_private(self) -> None:
@@ -288,8 +288,7 @@ class TrustedVerifierTests(unittest.TestCase):
             secret = root / "operator-secret.txt"
             secret.write_text("must stay unreadable", encoding="utf-8")
             paths = {
-                name: root / name
-                for name in ("checkout", "git", "cache", "runtime")
+                name: root / name for name in ("checkout", "git", "cache", "runtime")
             }
             for path in paths.values():
                 path.mkdir()
@@ -310,6 +309,8 @@ class TrustedVerifierTests(unittest.TestCase):
                 f"TRUSTED_ROOT={profile.parent}",
                 "-D",
                 f"RUNTIME_HOME={paths['runtime']}",
+                "-D",
+                f"SEALED_INPUT={paths['runtime']}",
                 "-D",
                 f"PYTHON_ROOT={python_root}",
                 "-D",
@@ -370,6 +371,97 @@ class TrustedVerifierTests(unittest.TestCase):
                 for action in ("build", "qualify", "audit")
             ],
         )
+
+    def test_sealed_snapshot_is_independent_from_abandoned_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime_output = root / "runtime-output"
+            runtime_output.mkdir()
+            artifact = runtime_output / "artifact.json"
+            artifact.write_text('{"state":"complete"}\n', encoding="utf-8")
+            sealed = root / "sealed"
+
+            with artifact.open("r+b", buffering=0) as escaped_process_handle:
+                verifier._copy_regular_tree(runtime_output, sealed)
+                escaped_process_handle.seek(0)
+                escaped_process_handle.write(b'{"state":"tampered"}\n')
+
+            self.assertEqual(
+                (sealed / "artifact.json").read_text(encoding="utf-8"),
+                '{"state":"complete"}\n',
+            )
+            (runtime_output / "indirect").symlink_to(artifact)
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "indirect or special",
+            ):
+                verifier._copy_regular_tree(
+                    runtime_output,
+                    root / "rejected",
+                )
+
+    def test_operator_review_directory_cannot_overlap_readable_roots(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            readable = root / "workspace"
+            review = readable / "reviews"
+            review.mkdir(parents=True)
+
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "overlaps",
+            ):
+                verifier.assert_operator_directory_isolated(
+                    review,
+                    forbidden_roots=(readable,),
+                    must_exist=True,
+                )
+
+    def test_unpinned_toolchain_lock_is_rejected_before_any_executable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout"
+            lock_path = checkout / verifier.TOOLCHAIN_LOCK_RELATIVE_PATH
+            lock_path.parent.mkdir(parents=True)
+            lock_path.write_text("{}\n", encoding="utf-8")
+            missing = root / "must-not-run"
+            inputs = verifier.RuntimeInputs(
+                python_root=missing,
+                platformio_root=missing,
+                cache_root=missing,
+                idf_root=missing,
+                espressif_root=missing,
+                test_python=missing,
+                test_user_site_root=missing,
+                homebrew_root=missing,
+                host_cxx=missing,
+            )
+
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "not pinned",
+            ):
+                verifier.prevalidate_runtime_inputs(
+                    checkout=checkout,
+                    inputs=inputs,
+                    git_home=root,
+                )
+
+    def test_random_review_session_can_be_claimed_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary)
+
+            verifier.claim_review_session(review, "d" * 64)
+
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "already consumed",
+            ):
+                verifier.claim_review_session(review, "d" * 64)
 
     def test_reports_are_snapshotted_before_untrusted_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -442,21 +534,32 @@ class TrustedVerifierTests(unittest.TestCase):
             role="primary",
             target_commit="a" * 40,
             verifier_commit="b" * 40,
+            review_session_nonce="d" * 64,
             evidence=evidence,
         )
         second = verifier.review_challenge(
             role="primary",
             target_commit="a" * 40,
             verifier_commit="c" * 40,
+            review_session_nonce="d" * 64,
             evidence=evidence,
         )
 
         self.assertNotEqual(first, second)
+        third = verifier.review_challenge(
+            role="primary",
+            target_commit="a" * 40,
+            verifier_commit="b" * 40,
+            review_session_nonce="e" * 64,
+            evidence=evidence,
+        )
+        self.assertNotEqual(first, third)
 
     def test_prompt_templates_are_inert_and_bind_both_commits(self) -> None:
         bundle = verifier.build_review_prompt_bundle(
             target_commit="a" * 40,
             verifier_commit_sha="b" * 40,
+            review_session_nonce="d" * 64,
             evidence=self.matrix_evidence(),
         )
 
@@ -508,6 +611,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 expected_role="primary",
                 target_commit="a" * 40,
                 verifier_commit="b" * 40,
+                review_session_nonce="d" * 64,
                 evidence=self.matrix_evidence(),
                 tracked_files={"README.md"},
             )
@@ -531,6 +635,7 @@ class TrustedVerifierTests(unittest.TestCase):
         result = verifier.make_matrix_result(
             target_commit="a" * 40,
             verifier_commit="b" * 40,
+            review_session_nonce="d" * 64,
             evidence=self.matrix_evidence(),
             reports=reports,
             tracked_files={"README.md"},

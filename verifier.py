@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -21,8 +22,13 @@ from typing import Any, Final
 REPOSITORY: Final = "Glimmer2077/sanhuo-robot"
 VERIFIER_REPOSITORY: Final = "Glimmer2077/sanhuo-q7-verifier"
 CANDIDATES: Final = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
-TARGET_REQUIRED_COMMITS: Final = (
-    "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
+TARGET_REQUIRED_COMMITS: Final = ("8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",)
+TRUSTED_TOOLCHAIN_LOCK_SHA256: Final = (
+    "922619a2f952e671e9e1437ae169c5fe40e3460d1d4ffdee05bd144bac6e03a3"
+)
+TOOLCHAIN_LOCK_RELATIVE_PATH: Final = (
+    "firmware/sanhuo-stackchan-idf/tools/motion_firmware_matrix/"
+    "contracts/phase2-toolchain-lock.v1.json"
 )
 ROLES: Final = ("primary", "verifier")
 MAX_REPORT_BYTES: Final = 256 * 1024
@@ -179,9 +185,7 @@ def load_closed_json(
             decoded,
             object_pairs_hook=_reject_duplicate_fields,
             parse_constant=lambda constant: (_ for _ in ()).throw(
-                VerificationError(
-                    f"{label} review contains invalid number: {constant}"
-                )
+                VerificationError(f"{label} review contains invalid number: {constant}")
             ),
         )
     except VerificationError:
@@ -240,6 +244,7 @@ def review_challenge(
     role: str,
     target_commit: str,
     verifier_commit: str,
+    review_session_nonce: str,
     evidence: Mapping[str, Any],
 ) -> str:
     """Bind one report to the target, evidence and independent verifier code."""
@@ -247,6 +252,7 @@ def review_challenge(
     _require(role in ROLES, "review role is invalid")
     _validate_commit(target_commit, "target")
     _validate_commit(verifier_commit, "verifier")
+    _validate_sha256(review_session_nonce, "review session nonce")
     validated_evidence = _validate_evidence(dict(evidence))
     return sha256_json(
         {
@@ -256,6 +262,7 @@ def review_challenge(
             "role": role,
             "reviewed_commit_sha": target_commit,
             "verifier_commit_sha": verifier_commit,
+            "review_session_nonce": review_session_nonce,
             "matrix_evidence": validated_evidence,
         }
     )
@@ -423,6 +430,7 @@ def prevalidate_reports(
     *,
     target_commit: str,
     verifier_commit: str | None = None,
+    review_session_nonce: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Reject malformed or non-passing reports before target code executes."""
 
@@ -448,6 +456,11 @@ def prevalidate_reports(
     )
     if verifier_commit is not None:
         _validate_commit(verifier_commit, "verifier")
+        _require(
+            review_session_nonce is not None,
+            "review session nonce is required",
+        )
+        _validate_sha256(review_session_nonce, "review session nonce")
         for role in ROLES:
             _require(
                 reports[role]["challenge"]
@@ -455,6 +468,7 @@ def prevalidate_reports(
                     role=role,
                     target_commit=target_commit,
                     verifier_commit=verifier_commit,
+                    review_session_nonce=review_session_nonce,
                     evidence=validated[role]["evidence"],
                 ),
                 f"{role} review challenge drift",
@@ -468,6 +482,7 @@ def validate_review_report(
     expected_role: str,
     target_commit: str,
     verifier_commit: str,
+    review_session_nonce: str,
     evidence: Mapping[str, Any],
     tracked_files: Set[str],
 ) -> dict[str, Any]:
@@ -476,6 +491,7 @@ def validate_review_report(
     _require(expected_role in ROLES, "review role is invalid")
     _validate_commit(target_commit, "target")
     _validate_commit(verifier_commit, "verifier")
+    _validate_sha256(review_session_nonce, "review session nonce")
     expected_evidence = _validate_evidence(dict(evidence))
     _require(
         isinstance(tracked_files, (set, frozenset))
@@ -499,6 +515,7 @@ def validate_review_report(
         role=expected_role,
         target_commit=target_commit,
         verifier_commit=verifier_commit,
+        review_session_nonce=review_session_nonce,
         evidence=expected_evidence,
     )
     _require(
@@ -516,6 +533,7 @@ def make_matrix_result(
     *,
     target_commit: str,
     verifier_commit: str,
+    review_session_nonce: str,
     evidence: Mapping[str, Any],
     reports: Mapping[str, Mapping[str, Any]],
     tracked_files: Set[str],
@@ -529,6 +547,7 @@ def make_matrix_result(
             expected_role=role,
             target_commit=target_commit,
             verifier_commit=verifier_commit,
+            review_session_nonce=review_session_nonce,
             evidence=evidence,
             tracked_files=tracked_files,
         )
@@ -539,10 +558,7 @@ def make_matrix_result(
         != validated["verifier"]["review_instance_id"],
         "review instance identifiers must be distinct",
     )
-    report_hashes = {
-        role: sha256_json(reports[role])
-        for role in ROLES
-    }
+    report_hashes = {role: sha256_json(reports[role]) for role in ROLES}
     _require(
         report_hashes["primary"] != report_hashes["verifier"],
         "review reports must be distinct",
@@ -560,8 +576,7 @@ def make_matrix_result(
                 else "project-level"
             )
             finding_risks.append(
-                f"{role} {finding['severity']} finding: "
-                f"{finding['title']} ({location})"
+                f"{role} {finding['severity']} finding: {finding['title']} ({location})"
             )
     validated_evidence = _validate_evidence(dict(evidence))
     result = qualification_result(
@@ -573,6 +588,7 @@ def make_matrix_result(
         {
             "verifier_repository": VERIFIER_REPOSITORY,
             "verifier_commit_sha": verifier_commit,
+            "review_session_nonce": review_session_nonce,
             "matrix_evidence": validated_evidence,
             "reports": {
                 role: {
@@ -581,36 +597,23 @@ def make_matrix_result(
                         role=role,
                         target_commit=target_commit,
                         verifier_commit=verifier_commit,
+                        review_session_nonce=review_session_nonce,
                         evidence=validated_evidence,
                     ),
-                    "review_instance_id": validated[role][
-                        "review_instance_id"
-                    ],
+                    "review_instance_id": validated[role]["review_instance_id"],
                 }
                 for role in ROLES
             },
             "findings": finding_counts,
             "non_blocking_findings": non_blocking_findings,
             "covered": _deduplicate_text(
-                [
-                    item
-                    for role in ROLES
-                    for item in validated[role]["covered"]
-                ]
+                [item for role in ROLES for item in validated[role]["covered"]]
             ),
             "not_covered": _deduplicate_text(
-                [
-                    item
-                    for role in ROLES
-                    for item in validated[role]["not_covered"]
-                ]
+                [item for role in ROLES for item in validated[role]["not_covered"]]
             ),
             "known_risks": _deduplicate_text(
-                [
-                    item
-                    for role in ROLES
-                    for item in validated[role]["known_risks"]
-                ]
+                [item for role in ROLES for item in validated[role]["known_risks"]]
                 + finding_risks
             ),
         }
@@ -657,6 +660,10 @@ def sandbox_command(
     homebrew_root: Path,
     host_cxx: Path,
     tool_roots: tuple[Path, Path, Path, Path],
+    driver_mode: str,
+    candidate: str | None = None,
+    action: str | None = None,
+    sealed_input: Path | None = None,
 ) -> list[str]:
     """Build the fixed macOS sandbox command without invoking a shell."""
 
@@ -665,6 +672,17 @@ def sandbox_command(
     )
     profile = (trusted_root / "sanhuo-q7.sb").resolve()
     driver = (trusted_root / "isolated_driver.py").resolve()
+    _require(driver_mode in {"action", "evidence"}, "driver mode is invalid")
+    if driver_mode == "action":
+        _require(
+            candidate in CANDIDATES and action in {"build", "qualify", "audit"},
+            "driver action is invalid",
+        )
+    else:
+        _require(candidate is None and action is None, "evidence action must be empty")
+    sealed_input = (
+        sealed_input.resolve() if sealed_input is not None else runtime_home.resolve()
+    )
     command = [
         "sandbox-exec",
         "-f",
@@ -679,6 +697,8 @@ def sandbox_command(
         f"TRUSTED_ROOT={trusted_root.resolve()}",
         "-D",
         f"RUNTIME_HOME={runtime_home.resolve()}",
+        "-D",
+        f"SEALED_INPUT={sealed_input}",
         "-D",
         f"PYTHON_ROOT={python_root}",
         "-D",
@@ -706,6 +726,8 @@ def sandbox_command(
         f"SANHUO_Q7_CHECKOUT={checkout.resolve()}",
         f"SANHUO_Q7_CACHE={cache.resolve()}",
         f"SANHUO_Q7_RUNTIME_HOME={runtime_home.resolve()}",
+        f"SANHUO_Q7_DRIVER_MODE={driver_mode}",
+        f"SANHUO_Q7_SEALED_INPUT={sealed_input}",
         f"SANHUO_Q7_PLATFORMIO_ROOT={platformio_root}",
         f"SANHUO_Q7_PLATFORMIO_EXECUTABLE={python_root / 'bin/platformio'}",
         f"SANHUO_Q7_IDF_ROOT={idf_root}",
@@ -715,6 +737,14 @@ def sandbox_command(
         f"SANHUO_Q7_HOMEBREW_ROOT={homebrew_root.resolve()}",
         f"SANHUO_Q7_HOST_CXX={host_cxx.resolve()}",
         f"SANHUO_MATRIX_TEST_PYTHON={test_python.resolve()}",
+        *(
+            [
+                f"SANHUO_Q7_CANDIDATE={candidate}",
+                f"SANHUO_Q7_ACTION={action}",
+            ]
+            if driver_mode == "action"
+            else []
+        ),
         str(python_root / "bin/python3"),
         str(driver),
     ]
@@ -795,9 +825,7 @@ def assert_report_snapshots_unchanged(
             review_root / f"{role}-review.json"
         )
         if current != snapshots[role].payload:
-            raise VerificationError(
-                f"{role} report changed after it was captured"
-            )
+            raise VerificationError(f"{role} report changed after it was captured")
 
 
 def qualification_result(
@@ -858,18 +886,13 @@ def resolve_runtime_inputs(tool_workspace: Path, home: Path) -> RuntimeInputs:
     workspace = tool_workspace.resolve()
     inputs = RuntimeInputs(
         python_root=(workspace / ".venv").resolve(),
-        platformio_root=(
-            workspace / "firmware/sanhuo-stackchan/.platformio"
-        ).resolve(),
+        platformio_root=(workspace / "firmware/sanhuo-stackchan/.platformio").resolve(),
         cache_root=(
-            workspace
-            / "firmware/sanhuo-stackchan-idf/.motion-firmware-matrix-cache"
+            workspace / "firmware/sanhuo-stackchan-idf/.motion-firmware-matrix-cache"
         ).resolve(),
         idf_root=(home / "esp/esp-idf-v5.5.4").resolve(),
         espressif_root=(home / ".espressif").resolve(),
-        test_python=Path(
-            "/opt/homebrew/opt/python@3.11/bin/python3.11"
-        ).resolve(),
+        test_python=Path("/opt/homebrew/opt/python@3.11/bin/python3.11").resolve(),
         test_user_site_root=(
             home / "Library/Python/3.11/lib/python/site-packages"
         ).resolve(),
@@ -880,8 +903,7 @@ def resolve_runtime_inputs(tool_workspace: Path, home: Path) -> RuntimeInputs:
         inputs.python_root / "bin/python3",
         inputs.python_root / "bin/platformio",
         inputs.idf_root / "tools/idf.py",
-        inputs.espressif_root
-        / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
+        inputs.espressif_root / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
         "xtensa-esp-elf/bin/xtensa-esp-elf-gcc",
         inputs.test_python,
         inputs.host_cxx,
@@ -902,26 +924,287 @@ def resolve_runtime_inputs(tool_workspace: Path, home: Path) -> RuntimeInputs:
         all(path.is_dir() for path in required_directories),
         "locked build input directory is missing",
     )
-    probe = subprocess.run(
+    return inputs
+
+
+def require_trusted_launcher() -> None:
+    """Require Apple's isolated Python as the verifier's outer trust root."""
+
+    executable = Path(sys.executable).resolve()
+    developer_root = Path("/Applications/Xcode.app/Contents/Developer").resolve()
+    _require(sys.flags.isolated == 1, "verifier must run with Python -I")
+    _require(
+        executable == developer_root or developer_root in executable.parents,
+        "verifier must run with Apple Xcode Python",
+    )
+
+
+def _directory_closure(path: Path) -> dict[str, int | str]:
+    """Hash a locked directory without following symbolic links."""
+
+    _require(path.is_dir() and not path.is_symlink(), "closure root is invalid")
+    digest = hashlib.sha256()
+    file_count = 0
+    symlink_count = 0
+    total_bytes = 0
+
+    def visit(directory: Path, relative_directory: PurePosixPath) -> None:
+        nonlocal file_count, symlink_count, total_bytes
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as exc:
+            raise VerificationError("cannot read toolchain closure") from exc
+        for entry in entries:
+            relative = relative_directory / entry.name
+            relative_bytes = relative.as_posix().encode("utf-8")
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise VerificationError("cannot stat toolchain closure") from exc
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISDIR(info.st_mode):
+                digest.update(b"D\0" + relative_bytes + b"\0")
+                visit(Path(entry.path), relative)
+            elif stat.S_ISREG(info.st_mode):
+                observed, _ = _sha256_regular_file(
+                    Path(entry.path),
+                    label="toolchain closure file",
+                    max_bytes=max(info.st_size, 1),
+                )
+                digest.update(
+                    b"F\0"
+                    + relative_bytes
+                    + b"\0"
+                    + str(mode).encode("ascii")
+                    + b"\0"
+                    + str(info.st_size).encode("ascii")
+                    + b"\0"
+                    + observed.encode("ascii")
+                    + b"\0"
+                )
+                file_count += 1
+                total_bytes += info.st_size
+            elif stat.S_ISLNK(info.st_mode):
+                try:
+                    target = os.readlink(entry.path)
+                except OSError as exc:
+                    raise VerificationError(
+                        "cannot read toolchain closure symlink"
+                    ) from exc
+                digest.update(
+                    b"L\0" + relative_bytes + b"\0" + target.encode("utf-8") + b"\0"
+                )
+                symlink_count += 1
+            else:
+                raise VerificationError("toolchain closure has a special file")
+
+    visit(path, PurePosixPath())
+    return {
+        "closure_sha256": digest.hexdigest(),
+        "file_count": file_count,
+        "symlink_count": symlink_count,
+        "bytes": total_bytes,
+    }
+
+
+def _validate_closure_symlinks(
+    root: Path,
+    *,
+    allowed_roots: tuple[Path, ...],
+) -> None:
+    for path in root.rglob("*"):
+        if not path.is_symlink():
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise VerificationError("toolchain has a broken symlink") from exc
+        _require(
+            any(
+                resolved == allowed or allowed in resolved.parents
+                for allowed in allowed_roots
+            ),
+            "toolchain symlink escapes locked roots",
+        )
+
+
+def prevalidate_runtime_inputs(
+    *,
+    checkout: Path,
+    inputs: RuntimeInputs,
+    git_home: Path,
+) -> dict[str, Any]:
+    """Validate the complete executable closure before target Python runs."""
+
+    lock_path = checkout / TOOLCHAIN_LOCK_RELATIVE_PATH
+    lock_payload = _read_regular_file_without_following(
+        lock_path,
+        max_bytes=1024 * 1024,
+        label="trusted toolchain lock",
+    )
+    _require(
+        hashlib.sha256(lock_payload).hexdigest() == TRUSTED_TOOLCHAIN_LOCK_SHA256,
+        "target toolchain lock is not pinned by this verifier",
+    )
+    lock = load_closed_json(
+        lock_payload,
+        label="trusted toolchain lock",
+        max_bytes=1024 * 1024,
+    )
+    _require(
+        lock.get("schema") == "sanhuo.motion_phase2_toolchain_lock.v1"
+        and lock.get("network_during_build") is False,
+        "trusted toolchain lock is invalid",
+    )
+    executable_checks = (
+        (
+            inputs.python_root / "bin/platformio",
+            lock["platformio_core"]["executable_sha256"],
+            "PlatformIO executable",
+        ),
+        (
+            inputs.idf_root / "tools/idf.py",
+            lock["esp_idf"]["idf_py_sha256"],
+            "ESP-IDF entrypoint",
+        ),
+        (
+            inputs.espressif_root / lock["esp_idf"]["compiler_relative_path"],
+            lock["esp_idf"]["compiler_sha256"],
+            "ESP-IDF compiler",
+        ),
+        (
+            inputs.test_python.resolve(),
+            lock["host_test"]["python_executable_sha256"],
+            "host test Python",
+        ),
+        (
+            inputs.host_cxx.resolve(),
+            lock["host_test"]["cxx_executable_sha256"],
+            "host C++ compiler",
+        ),
+    )
+    for path, expected, label in executable_checks:
+        observed, _ = _sha256_regular_file(path, label=label)
+        _require(observed == expected, f"{label} SHA256 mismatch")
+
+    idf_commit = (
+        _git(
+            ["-C", str(inputs.idf_root), "rev-parse", "--verify", "HEAD^{commit}"],
+            home=git_home,
+        )
+        .decode("ascii")
+        .strip()
+    )
+    idf_tree = (
+        _git(
+            ["-C", str(inputs.idf_root), "rev-parse", "--verify", "HEAD^{tree}"],
+            home=git_home,
+        )
+        .decode("ascii")
+        .strip()
+    )
+    idf_status = _git(
+        [
+            "-C",
+            str(inputs.idf_root),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        home=git_home,
+    )
+    _require(
+        idf_commit == lock["esp_idf"]["commit"]
+        and idf_tree == lock["esp_idf"]["tree"]
+        and not idf_status,
+        "ESP-IDF Git identity drift",
+    )
+
+    for package in lock["packages"]:
+        metadata_path = inputs.platformio_root / package["relative_metadata_path"]
+        observed, _ = _sha256_regular_file(
+            metadata_path,
+            label=f"{package['id']} metadata",
+        )
+        _require(
+            observed == package["metadata_sha256"],
+            f"toolchain package drift: {package['id']}",
+        )
+        metadata = load_closed_json(
+            _read_regular_file_without_following(
+                metadata_path,
+                max_bytes=1024 * 1024,
+                label=f"{package['id']} metadata",
+            ),
+            label=f"{package['id']} metadata",
+            max_bytes=1024 * 1024,
+        )
+        _require(
+            metadata.get("version") == package["version"],
+            f"toolchain package version drift: {package['id']}",
+        )
+        for required in package["required_files"]:
+            required_path = inputs.platformio_root / required["path"]
+            required_sha, _ = _sha256_regular_file(
+                required_path,
+                label=f"{package['id']} required file",
+            )
+            _require(
+                required_sha == required["sha256"],
+                f"toolchain package file drift: {package['id']}",
+            )
+
+    base_roots = {
+        "repository": inputs.python_root.parent,
+        "platformio": inputs.platformio_root,
+        "espressif": inputs.espressif_root,
+        "homebrew": inputs.homebrew_root,
+        "test_user_site": inputs.test_user_site_root,
+    }
+    resolved_closures = tuple(
+        (
+            closure,
+            (base_roots[closure["base"]] / closure["path"]).resolve(),
+        )
+        for closure in lock["closures"]
+    )
+    allowed_roots = tuple(root for _, root in resolved_closures)
+    for closure, root in resolved_closures:
+        observed = _directory_closure(root)
+        expected = {
+            "closure_sha256": closure["closure_sha256"],
+            "file_count": closure["file_count"],
+            "symlink_count": closure["symlink_count"],
+            "bytes": closure["bytes"],
+        }
+        _require(
+            observed == expected,
+            f"toolchain closure mismatch: {closure['id']}",
+        )
+        _validate_closure_symlinks(root, allowed_roots=allowed_roots)
+
+    probe = _run_trusted(
         [
             str(inputs.test_python),
             "-c",
             "import pytest,jsonschema",
         ],
-        env={
+        cwd=None,
+        environment={
             "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
             "PYTHONNOUSERSITE": "1",
             "PYTHONPATH": str(inputs.test_user_site_root),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         },
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         timeout=30,
-        check=False,
     )
     _require(probe.returncode == 0, "closed host test Python is incomplete")
-    return inputs
+    return {
+        "schema": "sanhuo.trusted_q7_toolchain_preflight.v1",
+        "toolchain_lock_sha256": TRUSTED_TOOLCHAIN_LOCK_SHA256,
+        "closures_verified": len(resolved_closures),
+        "passed": True,
+    }
 
 
 def _run_trusted(
@@ -943,7 +1226,9 @@ def _run_trusted(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise VerificationError(f"trusted command could not complete: {command[0]}") from exc
+        raise VerificationError(
+            f"trusted command could not complete: {command[0]}"
+        ) from exc
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise VerificationError(
@@ -971,10 +1256,14 @@ def _git(
 def verifier_commit(trusted_root: Path, home: Path) -> str:
     """Return the clean exact commit containing the running verifier."""
 
-    commit = _git(
-        ["-C", str(trusted_root), "rev-parse", "--verify", "HEAD"],
-        home=home,
-    ).decode("ascii").strip()
+    commit = (
+        _git(
+            ["-C", str(trusted_root), "rev-parse", "--verify", "HEAD"],
+            home=home,
+        )
+        .decode("ascii")
+        .strip()
+    )
     _validate_commit(commit, "verifier")
     status = _git(
         [
@@ -1025,25 +1314,33 @@ def create_target_checkout(
         and not source_git_dir.is_symlink(),
         "target repository is not a regular Git worktree",
     )
-    source_top = _git(
-        ["-C", str(source), "rev-parse", "--show-toplevel"],
-        home=home,
-    ).decode("utf-8").strip()
+    source_top = (
+        _git(
+            ["-C", str(source), "rev-parse", "--show-toplevel"],
+            home=home,
+        )
+        .decode("utf-8")
+        .strip()
+    )
     _require(
         Path(source_top).resolve() == source,
         "target repository root does not match tool workspace",
     )
     for commit in requested_commits:
-        source_commit = _git(
-            [
-                "-C",
-                str(source),
-                "rev-parse",
-                "--verify",
-                f"{commit}^{{commit}}",
-            ],
-            home=home,
-        ).decode("ascii").strip()
+        source_commit = (
+            _git(
+                [
+                    "-C",
+                    str(source),
+                    "rev-parse",
+                    "--verify",
+                    f"{commit}^{{commit}}",
+                ],
+                home=home,
+            )
+            .decode("ascii")
+            .strip()
+        )
         _require(
             source_commit == commit,
             "local target commit does not match request",
@@ -1073,16 +1370,20 @@ def create_target_checkout(
         timeout=600,
     )
     for commit in requested_commits:
-        fetched = _git(
-            [
-                "--git-dir",
-                str(git_dir),
-                "rev-parse",
-                "--verify",
-                f"{commit}^{{commit}}",
-            ],
-            home=home,
-        ).decode("ascii").strip()
+        fetched = (
+            _git(
+                [
+                    "--git-dir",
+                    str(git_dir),
+                    "rev-parse",
+                    "--verify",
+                    f"{commit}^{{commit}}",
+                ],
+                home=home,
+            )
+            .decode("ascii")
+            .strip()
+        )
         _require(fetched == commit, "copied target commit does not match request")
     _git(
         [
@@ -1116,11 +1417,7 @@ def tracked_files_at_commit(
         home=home,
     )
     try:
-        values = [
-            value.decode("utf-8")
-            for value in payload.split(b"\0")
-            if value
-        ]
+        values = [value.decode("utf-8") for value in payload.split(b"\0") if value]
     except UnicodeDecodeError as exc:
         raise VerificationError("reviewed tree contains a non-UTF-8 path") from exc
     _require(
@@ -1179,6 +1476,63 @@ def assert_target_tracked_files_unchanged(
             raise VerificationError("target tracked files changed during isolated run")
 
 
+def _copy_regular_tree(source: Path, destination: Path) -> None:
+    """Copy one untrusted tree into a new verifier-owned regular-file snapshot."""
+
+    _require(
+        source.is_dir() and not source.is_symlink(),
+        "stage output root is invalid",
+    )
+    _require(not destination.exists(), "sealed stage snapshot already exists")
+    destination.mkdir(mode=0o700)
+    total_bytes = 0
+
+    def copy_directory(source_root: Path, destination_root: Path) -> None:
+        nonlocal total_bytes
+        try:
+            entries = sorted(os.scandir(source_root), key=lambda item: item.name)
+        except OSError as exc:
+            raise VerificationError("stage output could not be listed") from exc
+        for entry in entries:
+            source_path = Path(entry.path)
+            destination_path = destination_root / entry.name
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise VerificationError("stage output could not be inspected") from exc
+            if stat.S_ISDIR(metadata.st_mode):
+                destination_path.mkdir(mode=0o700)
+                copy_directory(source_path, destination_path)
+            elif stat.S_ISREG(metadata.st_mode):
+                payload = _read_regular_file_without_following(
+                    source_path,
+                    max_bytes=MAX_BINARY_BYTES,
+                    label="stage output",
+                )
+                total_bytes += len(payload)
+                _require(
+                    total_bytes <= 512 * 1024 * 1024,
+                    "sealed stage snapshot is too large",
+                )
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                descriptor = os.open(destination_path, flags, 0o600)
+                try:
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        _require(written > 0, "stage snapshot write was incomplete")
+                        offset += written
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            else:
+                raise VerificationError(
+                    "stage output contains an indirect or special entry"
+                )
+
+    copy_directory(source, destination)
+
+
 def run_isolated_matrix(
     *,
     checkout: Path,
@@ -1187,16 +1541,85 @@ def run_isolated_matrix(
     inputs: RuntimeInputs,
     trusted_root: Path,
 ) -> dict[str, Any]:
-    """Run the fixed 12 commands once with no network, devices or credentials."""
+    """Run each action in a fresh sandbox and seal its regular-file snapshot."""
 
+    _require(not runtime_home.exists(), "matrix runtime root already exists")
     runtime_home.mkdir(mode=0o700)
-    (runtime_home / "tmp").mkdir(mode=0o700)
+    summaries: list[dict[str, Any]] = []
+    previous_snapshot: Path | None = None
+    for index, (candidate, action) in enumerate(container_actions()):
+        stage_home = runtime_home / f"stage-{index:02d}"
+        stage_home.mkdir(mode=0o700)
+        (stage_home / "tmp").mkdir(mode=0o700)
+        if previous_snapshot is None:
+            (stage_home / "output").mkdir(mode=0o700)
+        else:
+            _copy_regular_tree(
+                previous_snapshot / "output",
+                stage_home / "output",
+            )
+        command = sandbox_command(
+            checkout=checkout,
+            git_dir=git_dir,
+            cache=inputs.cache_root,
+            trusted_root=trusted_root,
+            runtime_home=stage_home,
+            test_python=inputs.test_python,
+            test_user_site_root=inputs.test_user_site_root,
+            homebrew_root=inputs.homebrew_root,
+            host_cxx=inputs.host_cxx,
+            tool_roots=(
+                inputs.python_root,
+                inputs.platformio_root,
+                inputs.idf_root,
+                inputs.espressif_root,
+            ),
+            driver_mode="action",
+            candidate=candidate,
+            action=action,
+        )
+        result = _run_trusted(
+            command,
+            cwd=trusted_root,
+            environment={
+                "HOME": str(stage_home),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            timeout=75 * 60,
+        )
+        summary = load_closed_json(
+            result.stdout,
+            label="isolated action summary",
+            max_bytes=MAX_ARTIFACT_JSON_BYTES,
+        )
+        _require(
+            summary.get("schema") == "sanhuo.trusted_q7_isolated_action.v1"
+            and summary.get("status") == "passed"
+            and summary.get("candidate") == candidate
+            and summary.get("action") == action
+            and summary.get("returncode") == 0
+            and summary.get("network") is False
+            and summary.get("hardware_devices") is False,
+            "isolated action summary is invalid",
+        )
+        summaries.append(summary)
+        sealed = runtime_home / f"sealed-{index:02d}"
+        sealed.mkdir(mode=0o700)
+        _copy_regular_tree(stage_home / "output", sealed / "output")
+        previous_snapshot = sealed
+
+    _require(previous_snapshot is not None, "matrix produced no sealed snapshot")
+    evidence_home = runtime_home / "evidence"
+    evidence_home.mkdir(mode=0o700)
+    (evidence_home / "tmp").mkdir(mode=0o700)
     command = sandbox_command(
         checkout=checkout,
         git_dir=git_dir,
         cache=inputs.cache_root,
         trusted_root=trusted_root,
-        runtime_home=runtime_home,
+        runtime_home=evidence_home,
         test_python=inputs.test_python,
         test_user_site_root=inputs.test_user_site_root,
         homebrew_root=inputs.homebrew_root,
@@ -1207,53 +1630,41 @@ def run_isolated_matrix(
             inputs.idf_root,
             inputs.espressif_root,
         ),
+        driver_mode="evidence",
+        sealed_input=previous_snapshot,
     )
     result = _run_trusted(
         command,
         cwd=trusted_root,
         environment={
-            "HOME": str(runtime_home),
+            "HOME": str(evidence_home),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
         },
-        timeout=6 * 60 * 60,
+        timeout=15 * 60,
     )
-    _require(
-        len(result.stdout) <= MAX_ARTIFACT_JSON_BYTES,
-        "isolated matrix summary is too large",
-    )
-    summary = load_closed_json(
+    evidence_summary = load_closed_json(
         result.stdout,
-        label="isolated matrix summary",
+        label="trusted ELF evidence",
         max_bytes=MAX_ARTIFACT_JSON_BYTES,
     )
     _require(
-        summary.get("schema") == "sanhuo.trusted_q7_isolated_run.v1"
-        and summary.get("status") == "passed"
-        and summary.get("network") is False
-        and summary.get("hardware_devices") is False,
-        "isolated matrix summary is invalid",
+        evidence_summary.get("schema") == "sanhuo.trusted_q7_elf_evidence.v1"
+        and evidence_summary.get("status") == "passed"
+        and evidence_summary.get("network") is False
+        and evidence_summary.get("hardware_devices") is False,
+        "trusted ELF evidence summary is invalid",
     )
-    commands = summary.get("commands")
-    _require(
-        isinstance(commands, list) and len(commands) == len(container_actions()),
-        "isolated matrix command count drift",
-    )
-    actual_actions = [
-        (item.get("candidate"), item.get("action"))
-        for item in commands
-        if type(item) is dict
-    ]
-    _require(
-        actual_actions == container_actions(),
-        "isolated matrix action order drift",
-    )
-    _require(
-        all(item.get("returncode") == 0 for item in commands),
-        "isolated matrix contains a failed action",
-    )
-    return summary
+    return {
+        "schema": "sanhuo.trusted_q7_isolated_run.v2",
+        "status": "passed",
+        "commands": summaries,
+        "elf_evidence": evidence_summary.get("elf_evidence"),
+        "sealed_snapshot": str(previous_snapshot),
+        "network": False,
+        "hardware_devices": False,
+    }
 
 
 def _sha256_regular_file(
@@ -1351,8 +1762,7 @@ def collect_matrix_evidence(
     binary_root = binary_root if binary_root is not None else candidate_root
     elf_evidence = isolated_summary.get("elf_evidence")
     _require(
-        type(elf_evidence) is dict
-        and set(elf_evidence) == set(CANDIDATES),
+        type(elf_evidence) is dict and set(elf_evidence) == set(CANDIDATES),
         "trusted ELF evidence candidates drift",
     )
     matrix: dict[str, dict[str, Any]] = {}
@@ -1360,9 +1770,7 @@ def collect_matrix_evidence(
         audit_path = artifact_root / candidate / "audit-report.json"
         build_path = artifact_root / candidate / "build-report.json"
         tracked_manifest_path = candidate_root / candidate / "manifest.json"
-        manifest_path = (
-            artifact_root / candidate / "manifest.generated.json"
-        )
+        manifest_path = artifact_root / candidate / "manifest.generated.json"
         firmware_path = binary_root / candidate / "firmware.bin"
         elf_path = binary_root / candidate / "firmware.elf"
         audit = _load_artifact_json(audit_path, label=f"{candidate} audit")
@@ -1510,6 +1918,7 @@ def build_review_report_template(
     role: str,
     target_commit: str,
     verifier_commit_sha: str,
+    review_session_nonce: str,
     evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -1519,6 +1928,7 @@ def build_review_report_template(
             role=role,
             target_commit=target_commit,
             verifier_commit=verifier_commit_sha,
+            review_session_nonce=review_session_nonce,
             evidence=evidence,
         ),
         "review_instance_id": f"replace-{role}-with-unique-id",
@@ -1528,9 +1938,7 @@ def build_review_report_template(
         "reviewed_areas": {area: False for area in REVIEWED_AREAS},
         "covered": ["请替换为本次实际检查范围"],
         "not_covered": ["未直接检查真实硬件"],
-        "known_risks": [
-            "外部 AI 来源与独立对话仍为流程自述，不能由本机密码学证明"
-        ],
+        "known_risks": ["外部 AI 来源与独立对话仍为流程自述，不能由本机密码学证明"],
         "attestations": {item: False for item in ATTESTATIONS},
         "findings": [],
     }
@@ -1540,6 +1948,7 @@ def build_review_prompt_bundle(
     *,
     target_commit: str,
     verifier_commit_sha: str,
+    review_session_nonce: str,
     evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Build the two copy-paste review prompts with distinct challenges."""
@@ -1561,9 +1970,9 @@ def build_review_prompt_bundle(
             ),
             "verifier_repository": VERIFIER_REPOSITORY,
             "verifier_commit_sha": verifier_commit_sha,
+            "review_session_nonce": review_session_nonce,
             "verifier_commit_url": (
-                f"https://github.com/{VERIFIER_REPOSITORY}/tree/"
-                f"{verifier_commit_sha}"
+                f"https://github.com/{VERIFIER_REPOSITORY}/tree/{verifier_commit_sha}"
             ),
             "matrix_evidence": dict(evidence),
             "instructions": [
@@ -1579,6 +1988,7 @@ def build_review_prompt_bundle(
                 role=role,
                 target_commit=target_commit,
                 verifier_commit_sha=verifier_commit_sha,
+                review_session_nonce=review_session_nonce,
                 evidence=evidence,
             ),
         }
@@ -1588,6 +1998,7 @@ def build_review_prompt_bundle(
         "reviewed_commit_sha": target_commit,
         "verifier_repository": VERIFIER_REPOSITORY,
         "verifier_commit_sha": verifier_commit_sha,
+        "review_session_nonce": review_session_nonce,
         "matrix_evidence": dict(evidence),
         "prompts": prompts,
     }
@@ -1611,15 +2022,132 @@ def _render_prompt(prompt: Mapping[str, Any]) -> str:
 def write_prompt_bundle(output_directory: Path, bundle: Mapping[str, Any]) -> None:
     _require(not output_directory.exists(), "prompt output directory already exists")
     output_directory.mkdir(mode=0o700)
-    (output_directory / "prompt-bundle.json").write_bytes(
-        canonical_json_bytes(bundle)
-    )
+    (output_directory / "prompt-bundle.json").write_bytes(canonical_json_bytes(bundle))
     prompts = bundle["prompts"]
     for role in ROLES:
         (output_directory / f"{role}-prompt.md").write_text(
             _render_prompt(prompts[role]),
             encoding="utf-8",
         )
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    first = first.resolve()
+    second = second.resolve()
+    return first == second or first in second.parents or second in first.parents
+
+
+def assert_operator_directory_isolated(
+    directory: Path,
+    *,
+    forbidden_roots: tuple[Path, ...],
+    must_exist: bool,
+) -> Path:
+    """Reject report or prompt paths visible to any untrusted sandbox."""
+
+    if must_exist:
+        _require(
+            directory.is_dir() and not directory.is_symlink(),
+            "operator review directory is invalid",
+        )
+        resolved = directory.resolve()
+    else:
+        _require(
+            not directory.exists() and directory.parent.is_dir(),
+            "prompt output directory must be new",
+        )
+        _require(
+            not directory.parent.is_symlink(),
+            "prompt output parent cannot be a symbolic link",
+        )
+        resolved = directory.resolve()
+    private_tmp = Path("/private/tmp").resolve()
+    _require(
+        private_tmp in resolved.parents,
+        "operator directory must be a dedicated child of /private/tmp",
+    )
+    for root in forbidden_roots:
+        _require(
+            not _paths_overlap(resolved, root),
+            "operator directory overlaps an untrusted readable root",
+        )
+    return resolved
+
+
+def load_review_bundle(
+    review_directory: Path,
+    *,
+    target_commit: str,
+    verifier_commit_sha: str,
+) -> dict[str, Any]:
+    payload = _read_regular_file_without_following(
+        review_directory / "prompt-bundle.json",
+        max_bytes=MAX_ARTIFACT_JSON_BYTES,
+        label="review prompt bundle",
+    )
+    bundle = load_closed_json(
+        payload,
+        label="review prompt bundle",
+        max_bytes=MAX_ARTIFACT_JSON_BYTES,
+    )
+    _require(
+        set(bundle)
+        == {
+            "schema",
+            "repository",
+            "reviewed_commit_sha",
+            "verifier_repository",
+            "verifier_commit_sha",
+            "review_session_nonce",
+            "matrix_evidence",
+            "prompts",
+        },
+        "review prompt bundle fields drift",
+    )
+    _require(
+        bundle["schema"] == "sanhuo.trusted_q7_external_ai_prompt_bundle.v1"
+        and bundle["repository"] == REPOSITORY
+        and bundle["verifier_repository"] == VERIFIER_REPOSITORY
+        and bundle["reviewed_commit_sha"] == target_commit
+        and bundle["verifier_commit_sha"] == verifier_commit_sha,
+        "review prompt bundle identity drift",
+    )
+    _validate_sha256(bundle["review_session_nonce"], "review session nonce")
+    bundle["matrix_evidence"] = _validate_evidence(bundle["matrix_evidence"])
+    _require(
+        type(bundle["prompts"]) is dict and set(bundle["prompts"]) == set(ROLES),
+        "review prompt bundle roles drift",
+    )
+    return bundle
+
+
+def claim_review_session(review_directory: Path, nonce: str) -> None:
+    """Atomically consume one random review challenge before target execution."""
+
+    _validate_sha256(nonce, "review session nonce")
+    marker = review_directory / ".q7-review-session-consumed.json"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise VerificationError(
+            "review session challenge was already consumed"
+        ) from exc
+    try:
+        payload = canonical_json_bytes(
+            {
+                "schema": "sanhuo.trusted_q7_review_session_claim.v1",
+                "review_session_nonce": nonce,
+            }
+        )
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            _require(written > 0, "review session claim write was incomplete")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_new_result(output: Path, result: Mapping[str, Any]) -> None:
@@ -1661,6 +2189,11 @@ def _execute_fresh_matrix(
             git_dir=git_dir,
             home=git_home,
         )
+        prevalidate_runtime_inputs(
+            checkout=checkout,
+            inputs=inputs,
+            git_home=git_home,
+        )
         isolated = run_isolated_matrix(
             checkout=checkout,
             git_dir=git_dir,
@@ -1682,8 +2215,16 @@ def _execute_fresh_matrix(
         evidence = collect_matrix_evidence(
             checkout,
             isolated,
-            artifact_root=runtime_home / "output/artifacts",
-            binary_root=runtime_home / "output/binaries",
+            artifact_root=(
+                runtime_home
+                / f"sealed-{len(container_actions()) - 1:02d}"
+                / "output/artifacts"
+            ),
+            binary_root=(
+                runtime_home
+                / f"sealed-{len(container_actions()) - 1:02d}"
+                / "output/binaries"
+            ),
         )
     return evidence, tracked_files
 
@@ -1697,6 +2238,24 @@ def prepare_reviews(
     trusted_root = Path(__file__).resolve().parent
     home = Path.home()
     verifier_sha = verifier_commit(trusted_root, home)
+    inputs = resolve_runtime_inputs(tool_workspace, home)
+    forbidden_roots = (
+        tool_workspace.resolve(),
+        trusted_root.resolve(),
+        inputs.python_root,
+        inputs.platformio_root,
+        inputs.cache_root,
+        inputs.idf_root,
+        inputs.espressif_root,
+        inputs.test_user_site_root,
+        inputs.homebrew_root,
+    )
+    output_directory = assert_operator_directory_isolated(
+        output_directory,
+        forbidden_roots=forbidden_roots,
+        must_exist=False,
+    )
+    review_session_nonce = secrets.token_hex(32)
     evidence, _ = _execute_fresh_matrix(
         target_commit=target_commit,
         tool_workspace=tool_workspace,
@@ -1706,6 +2265,7 @@ def prepare_reviews(
     bundle = build_review_prompt_bundle(
         target_commit=target_commit,
         verifier_commit_sha=verifier_sha,
+        review_session_nonce=review_session_nonce,
         evidence=evidence,
     )
     write_prompt_bundle(output_directory, bundle)
@@ -1723,6 +2283,29 @@ def verify_reviews(
     trusted_root = Path(__file__).resolve().parent
     home = Path.home()
     verifier_sha = verifier_commit(trusted_root, home)
+    inputs = resolve_runtime_inputs(tool_workspace, home)
+    forbidden_roots = (
+        tool_workspace.resolve(),
+        trusted_root.resolve(),
+        inputs.python_root,
+        inputs.platformio_root,
+        inputs.cache_root,
+        inputs.idf_root,
+        inputs.espressif_root,
+        inputs.test_user_site_root,
+        inputs.homebrew_root,
+    )
+    review_directory = assert_operator_directory_isolated(
+        review_directory,
+        forbidden_roots=forbidden_roots,
+        must_exist=True,
+    )
+    bundle = load_review_bundle(
+        review_directory,
+        target_commit=target_commit,
+        verifier_commit_sha=verifier_sha,
+    )
+    review_session_nonce = bundle["review_session_nonce"]
     snapshots = snapshot_reports(review_directory)
     reports = {
         role: load_closed_json(
@@ -1735,7 +2318,14 @@ def verify_reviews(
         reports,
         target_commit=target_commit,
         verifier_commit=verifier_sha,
+        review_session_nonce=review_session_nonce,
     )
+    _require(
+        reports["primary"]["candidates"] == bundle["matrix_evidence"]
+        and reports["verifier"]["candidates"] == bundle["matrix_evidence"],
+        "review reports do not match their prompt bundle",
+    )
+    claim_review_session(review_directory, review_session_nonce)
     evidence, tracked_files = _execute_fresh_matrix(
         target_commit=target_commit,
         tool_workspace=tool_workspace,
@@ -1745,6 +2335,7 @@ def verify_reviews(
     result = make_matrix_result(
         target_commit=target_commit,
         verifier_commit=verifier_sha,
+        review_session_nonce=review_session_nonce,
         evidence=evidence,
         reports=reports,
         tracked_files=tracked_files,
@@ -1771,6 +2362,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    require_trusted_launcher()
     arguments = _parser().parse_args(argv)
     if arguments.command == "prepare":
         prepare_reviews(

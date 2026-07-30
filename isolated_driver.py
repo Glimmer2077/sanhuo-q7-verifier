@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted fixed driver executed inside the macOS sandbox."""
+"""Trusted single-action driver executed inside the macOS sandbox."""
 
 from __future__ import annotations
 
@@ -13,14 +13,7 @@ from pathlib import Path
 
 
 CANDIDATES = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
-PLATFORMIO_PLATFORM_INPUTS = ("espressif32",)
-PLATFORMIO_PACKAGE_INPUTS = (
-    "framework-arduinoespressif32",
-    "toolchain-xtensa-esp32s3",
-    "toolchain-riscv32-esp",
-    "tool-esptoolpy",
-    "tool-scons",
-)
+ACTIONS = ("build", "qualify", "audit")
 CLI = Path(
     os.environ.get("SANHUO_Q7_CHECKOUT", "/workspace")
     + "/firmware/sanhuo-stackchan-idf/"
@@ -32,11 +25,25 @@ MAX_SPLIT_FAILURE_EXCERPT_BYTES = 80
 
 
 def matrix_commands() -> list[list[str]]:
+    """Describe the fixed matrix without executing it."""
+
     return [
         [sys.executable, str(CLI), action, "--candidate", candidate]
         for candidate in CANDIDATES
-        for action in ("build", "qualify", "audit")
+        for action in ACTIONS
     ]
+
+
+def selected_matrix_command() -> tuple[str, str, list[str]]:
+    candidate = os.environ.get("SANHUO_Q7_CANDIDATE")
+    action = os.environ.get("SANHUO_Q7_ACTION")
+    if candidate not in CANDIDATES or action not in ACTIONS:
+        raise RuntimeError("trusted action selection is invalid")
+    return (
+        candidate,
+        action,
+        [sys.executable, str(CLI), action, "--candidate", candidate],
+    )
 
 
 def _symbol_contains(symbols: set[str], marker: str) -> bool:
@@ -100,84 +107,6 @@ def derive_capabilities(
     }
 
 
-def _run_fixed_tool(command: list[str], *, cwd: Path) -> bytes:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=_closed_environment(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=120,
-        check=False,
-    )
-    if len(result.stdout) > MAX_COMMAND_OUTPUT_BYTES:
-        raise RuntimeError("trusted ELF tool stdout exceeded the limit")
-    if len(result.stderr) > MAX_COMMAND_OUTPUT_BYTES:
-        raise RuntimeError("trusted ELF tool stderr exceeded the limit")
-    if result.returncode != 0:
-        raise RuntimeError("trusted ELF tool failed")
-    return result.stdout
-
-
-def _elf_tools(candidate: str) -> tuple[Path, Path]:
-    if candidate == "MF-P2":
-        root = (
-            Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
-            / "packages/toolchain-xtensa-esp32s3/bin"
-        )
-        prefix = "xtensa-esp32s3-elf"
-    else:
-        root = (
-            Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
-            / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
-            "xtensa-esp-elf/bin"
-        )
-        prefix = "xtensa-esp-elf"
-    return root / f"{prefix}-objcopy", root / f"{prefix}-nm"
-
-
-def trusted_elf_evidence() -> dict[str, dict[str, object]]:
-    """Recompute raw, semantic and capability evidence from each current ELF."""
-
-    candidate_root = (
-        Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
-        / "output/binaries"
-    )
-    evidence: dict[str, dict[str, object]] = {}
-    for candidate in CANDIDATES:
-        elf = candidate_root / candidate / "firmware.elf"
-        if not elf.is_file() or elf.is_symlink():
-            raise RuntimeError(f"{candidate} current ELF is missing or indirect")
-        objcopy, nm_tool = _elf_tools(candidate)
-        stripped = candidate_root / candidate / ".trusted-semantic.elf"
-        if stripped.exists() or stripped.is_symlink():
-            raise RuntimeError("trusted semantic ELF output already exists")
-        _run_fixed_tool(
-            [str(objcopy), "--strip-all", str(elf), str(stripped)],
-            cwd=elf.parent,
-        )
-        try:
-            semantic_sha256 = hashlib.sha256(stripped.read_bytes()).hexdigest()
-        finally:
-            stripped.unlink(missing_ok=True)
-        symbol_output = _run_fixed_tool(
-            [str(nm_tool), "-C", "--defined-only", str(elf)],
-            cwd=elf.parent,
-        )
-        symbols: set[str] = set()
-        for line in symbol_output.decode("utf-8", errors="replace").splitlines():
-            fields = line.strip().split(maxsplit=2)
-            if len(fields) == 3:
-                symbols.add(fields[2])
-        evidence[candidate] = {
-            "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
-            "elf_semantic_sha256": semantic_sha256,
-            "firmware_capabilities": derive_capabilities(candidate, symbols),
-        }
-    return evidence
-
-
 def _closed_environment() -> dict[str, str]:
     runtime_home = os.environ["SANHUO_Q7_RUNTIME_HOME"]
     checkout = os.environ["SANHUO_Q7_CHECKOUT"]
@@ -203,7 +132,7 @@ def _closed_environment() -> dict[str, str]:
         "PYTHONNOUSERSITE": "1",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PLATFORMIO_CORE_DIR": platformio_root,
+        "PLATFORMIO_CORE_DIR": f"{runtime_home}/platformio-core",
         "PLATFORMIO_SETTING_ENABLE_TELEMETRY": "no",
         "PLATFORMIO_SETTING_CHECK_PLATFORMIO_INTERVAL": "0",
         "PLATFORMIO_SETTING_CHECK_PRUNE_SYSTEM_THRESHOLD": "0",
@@ -223,16 +152,12 @@ def _closed_environment() -> dict[str, str]:
         "SANHUO_Q7_HOST_CXX": host_cxx,
         "SANHUO_MATRIX_ARTIFACT_ROOT": f"{output_root}/artifacts",
         "SANHUO_MATRIX_BINARY_ROOT": f"{output_root}/binaries",
-        "SANHUO_MATRIX_SOURCE_CACHE_ROOT": (
-            f"{os.environ['SANHUO_Q7_CACHE']}/sources"
-        ),
+        "SANHUO_MATRIX_SOURCE_CACHE_ROOT": (f"{os.environ['SANHUO_Q7_CACHE']}/sources"),
         "SANHUO_MATRIX_PLATFORMIO_ROOT": platformio_root,
         "SANHUO_MATRIX_PLATFORMIO_EXECUTABLE": os.environ[
             "SANHUO_Q7_PLATFORMIO_EXECUTABLE"
         ],
-        "SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT": (
-            f"{runtime_home}/platformio-core"
-        ),
+        "SANHUO_MATRIX_PLATFORMIO_RUNTIME_ROOT": (f"{runtime_home}/platformio-core"),
         "SANHUO_MATRIX_IDF_ROOT": idf_root,
         "SANHUO_MATRIX_ESPRESSIF_ROOT": espressif_root,
         "SANHUO_MATRIX_TEST_PYTHON": test_python,
@@ -246,31 +171,9 @@ def prepare_runtime_layout() -> None:
     if not CLI.is_file():
         raise RuntimeError("target Q7 CLI is missing")
     runtime_home = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"])
-    platformio_root = Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
-    (runtime_home / "output/artifacts").mkdir(parents=True)
-    (runtime_home / "output/binaries").mkdir(parents=True)
-    runtime_platformio = runtime_home / "platformio-core"
-    runtime_platforms = runtime_platformio / "platforms"
-    runtime_packages = runtime_platformio / "packages"
-    runtime_platforms.mkdir(parents=True)
-    runtime_packages.mkdir()
-    (runtime_platformio / "cache").mkdir()
-    for name in PLATFORMIO_PLATFORM_INPUTS:
-        source = platformio_root / "platforms" / name
-        if not source.is_dir() or source.is_symlink():
-            raise RuntimeError("locked PlatformIO platform input is invalid")
-        (runtime_platforms / name).symlink_to(
-            source.resolve(),
-            target_is_directory=True,
-        )
-    for name in PLATFORMIO_PACKAGE_INPUTS:
-        source = platformio_root / "packages" / name
-        if not source.is_dir() or source.is_symlink():
-            raise RuntimeError("locked PlatformIO package input is invalid")
-        (runtime_packages / name).symlink_to(
-            source.resolve(),
-            target_is_directory=True,
-        )
+    (runtime_home / "output/artifacts").mkdir(parents=True, exist_ok=True)
+    (runtime_home / "output/binaries").mkdir(parents=True, exist_ok=True)
+    (runtime_home / "platformio-core/cache").mkdir(parents=True, exist_ok=True)
 
 
 def _process_group_still_exists(process_group: int) -> bool:
@@ -303,67 +206,131 @@ def _failure_stream_detail(stdout: bytes, stderr: bytes) -> str:
     )
 
 
-def main() -> int:
-    prepare_runtime_layout()
-    summaries: list[dict[str, object]] = []
-    environment = _closed_environment()
-    for command in matrix_commands():
-        process = subprocess.Popen(
-            command,
-            cwd=os.environ["SANHUO_Q7_CHECKOUT"],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+def _run_checked(command: list[str], *, cwd: Path, timeout: int) -> bytes:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=_closed_environment(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+    if len(stdout) > MAX_COMMAND_OUTPUT_BYTES:
+        raise RuntimeError("trusted command stdout exceeded the limit")
+    if len(stderr) > MAX_COMMAND_OUTPUT_BYTES:
+        raise RuntimeError("trusted command stderr exceeded the limit")
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"trusted command failed; returncode={process.returncode}; "
+            f"{_failure_stream_detail(stdout, stderr)}"
+        )
+    if _process_group_still_exists(process.pid):
+        os.killpg(process.pid, signal.SIGKILL)
+        raise RuntimeError("target command left same-session processes running")
+    return stdout
+
+
+def run_selected_action() -> dict[str, object]:
+    candidate, action, command = selected_matrix_command()
+    stdout = _run_checked(
+        command,
+        cwd=Path(os.environ["SANHUO_Q7_CHECKOUT"]),
+        timeout=3600,
+    )
+    return {
+        "schema": "sanhuo.trusted_q7_isolated_action.v1",
+        "status": "passed",
+        "candidate": candidate,
+        "action": action,
+        "returncode": 0,
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+        "network": False,
+        "hardware_devices": False,
+    }
+
+
+def _elf_tools(candidate: str) -> tuple[Path, Path]:
+    if candidate == "MF-P2":
+        root = (
+            Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
+            / "packages/toolchain-xtensa-esp32s3/bin"
+        )
+        prefix = "xtensa-esp32s3-elf"
+    else:
+        root = (
+            Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
+            / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
+            "xtensa-esp-elf/bin"
+        )
+        prefix = "xtensa-esp-elf"
+    return root / f"{prefix}-objcopy", root / f"{prefix}-nm"
+
+
+def trusted_elf_evidence() -> dict[str, dict[str, object]]:
+    """Recompute ELF evidence from the sealed, read-only final snapshot."""
+
+    sealed_root = Path(os.environ["SANHUO_Q7_SEALED_INPUT"])
+    candidate_root = sealed_root / "output/binaries"
+    scratch_root = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"]) / "tmp"
+    evidence: dict[str, dict[str, object]] = {}
+    for candidate in CANDIDATES:
+        elf = candidate_root / candidate / "firmware.elf"
+        if not elf.is_file() or elf.is_symlink():
+            raise RuntimeError(f"{candidate} current ELF is missing or indirect")
+        objcopy, nm_tool = _elf_tools(candidate)
+        stripped = scratch_root / f"{candidate}.semantic.elf"
+        if stripped.exists() or stripped.is_symlink():
+            raise RuntimeError("trusted semantic ELF output already exists")
+        _run_checked(
+            [str(objcopy), "--strip-all", str(elf), str(stripped)],
+            cwd=scratch_root,
+            timeout=120,
         )
         try:
-            stdout, stderr = process.communicate(timeout=3600)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            raise
-        result = subprocess.CompletedProcess(
-            command,
-            process.returncode,
-            stdout,
-            stderr,
+            semantic_sha256 = hashlib.sha256(stripped.read_bytes()).hexdigest()
+        finally:
+            stripped.unlink(missing_ok=True)
+        symbol_output = _run_checked(
+            [str(nm_tool), "-C", "--defined-only", str(elf)],
+            cwd=scratch_root,
+            timeout=120,
         )
-        if len(result.stdout) > MAX_COMMAND_OUTPUT_BYTES:
-            raise RuntimeError("target command stdout exceeded the trusted limit")
-        if len(result.stderr) > MAX_COMMAND_OUTPUT_BYTES:
-            raise RuntimeError("target command stderr exceeded the trusted limit")
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"target command failed: {command[-3]} {command[-1]}; "
-                f"returncode={result.returncode}; "
-                f"{_failure_stream_detail(result.stdout, result.stderr)}"
-            )
-        if _process_group_still_exists(process.pid):
-            os.killpg(process.pid, signal.SIGKILL)
-            raise RuntimeError("target command left background processes running")
-        summaries.append(
-            {
-                "candidate": command[-1],
-                "action": command[-3],
-                "returncode": result.returncode,
-                "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
-                "stderr_sha256": hashlib.sha256(result.stderr).hexdigest(),
-            }
-        )
-    print(
-        json.dumps(
-            {
-                "schema": "sanhuo.trusted_q7_isolated_run.v1",
-                "status": "passed",
-                "commands": summaries,
-                "elf_evidence": trusted_elf_evidence(),
-                "network": False,
-                "hardware_devices": False,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+        symbols: set[str] = set()
+        for line in symbol_output.decode("utf-8", errors="replace").splitlines():
+            fields = line.strip().split(maxsplit=2)
+            if len(fields) == 3:
+                symbols.add(fields[2])
+        evidence[candidate] = {
+            "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
+            "elf_semantic_sha256": semantic_sha256,
+            "firmware_capabilities": derive_capabilities(candidate, symbols),
+        }
+    return evidence
+
+
+def main() -> int:
+    mode = os.environ.get("SANHUO_Q7_DRIVER_MODE", "action")
+    prepare_runtime_layout()
+    if mode == "action":
+        summary = run_selected_action()
+    elif mode == "evidence":
+        summary = {
+            "schema": "sanhuo.trusted_q7_elf_evidence.v1",
+            "status": "passed",
+            "elf_evidence": trusted_elf_evidence(),
+            "network": False,
+            "hardware_devices": False,
+        }
+    else:
+        raise RuntimeError("trusted driver mode is invalid")
+    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
     return 0
 
 
