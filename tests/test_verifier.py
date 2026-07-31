@@ -239,6 +239,61 @@ class TrustedVerifierTests(unittest.TestCase):
 
         self.assertEqual(summary["tests"], 36)
 
+    def test_p2_q3_semantics_accept_final_center_before_60_seconds(self) -> None:
+        properties = {
+            "schema": "sanhuo.motion_phase2_q3_properties.v1",
+            "cases": 10_000,
+            "p2_mapping_checks": 10_000,
+            "transport_candidate_checks": 30_000,
+            "deterministic": True,
+            "hardware_used": False,
+            "maximum_t1_hold_error_raw": 2,
+            "maximum_t2_proxy_error_raw": 2,
+            "maximum_t2_segment_ms": 400,
+            "raw_envelope": {
+                "pan": [360, 560],
+                "tilt": [620, 754],
+            },
+            "trace_sha256": "1" * 64,
+        }
+        properties["report_sha256"] = verifier.sha256_json(properties)
+        evidence = {
+            "randomized_properties": properties,
+            "public_target_count": 58,
+            "system_duration_ms": 60_000,
+            "first": {"at_ms": 0, "yaw_tenths": 0, "pitch_tenths": 0},
+            "last": {
+                "at_ms": 58_140,
+                "yaw_tenths": 0,
+                "pitch_tenths": 0,
+            },
+        }
+
+        summary = verifier._validate_gate_semantics(
+            candidate="MF-P2",
+            gate="Q3",
+            evidence=evidence,
+            build={},
+            trusted_elf={},
+            trusted_q0={},
+        )
+
+        self.assertEqual(summary["cases"], 10_000)
+        too_early = copy.deepcopy(evidence)
+        too_early["last"]["at_ms"] = 56_999
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "MF-P2 Q3 public target semantics drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-P2",
+                gate="Q3",
+                evidence=too_early,
+                build={},
+                trusted_elf={},
+                trusted_q0={},
+            )
+
     def approved_report(
         self,
         role: str,

@@ -2878,12 +2878,22 @@ def _validate_gate_semantics(
     if gate == "Q3":
         properties = _validate_q3_properties(evidence.get("randomized_properties"))
         if candidate == "MF-P2":
+            first = evidence.get("first")
+            last = evidence.get("last")
             _require(
-                evidence.get("public_target_count", 0) > 0
-                and evidence.get("system_duration_ms") == 60_000
-                and evidence.get("first", {}).get("at_ms") == 0
-                and evidence.get("last")
-                == {"at_ms": 60000, "yaw_tenths": 0, "pitch_tenths": 0},
+                type(evidence.get("public_target_count")) is int
+                and evidence["public_target_count"] > 0
+                and type(evidence.get("system_duration_ms")) is int
+                and evidence["system_duration_ms"] == 60_000
+                and type(first) is dict
+                and first == {"at_ms": 0, "yaw_tenths": 0, "pitch_tenths": 0}
+                and all(type(value) is int for value in first.values())
+                and type(last) is dict
+                and set(last) == {"at_ms", "yaw_tenths", "pitch_tenths"}
+                and all(type(value) is int for value in last.values())
+                and 57_000 <= last["at_ms"] < 60_000
+                and last["yaw_tenths"] == 0
+                and last["pitch_tenths"] == 0,
                 "MF-P2 Q3 public target semantics drift",
             )
         else:
