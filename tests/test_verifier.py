@@ -53,42 +53,70 @@ class TrustedVerifierTests(unittest.TestCase):
         }
 
     def test_runtime_manifest_changes_only_fresh_evidence_fields(self) -> None:
-        tracked = {field: None for field in verifier.RUNTIME_MANIFEST_DYNAMIC_FIELDS}
-        tracked.update(
-            {
-                "candidate_id": "MF-P2",
-                "state": "research_only",
-                "hardware_state": {
-                    "eligible": False,
-                    "flashable": False,
-                    "authorized": False,
-                    "commands": [],
-                },
-                "build_tool_capabilities": {
-                    "network": False,
-                    "serial": False,
-                    "flash": False,
-                    "reset": False,
-                    "playback": False,
-                    "motion": False,
-                },
-            }
-        )
-        runtime = copy.deepcopy(tracked)
-        runtime["firmware"] = {"sha256": "a" * 64}
+        hardware_state = {
+            "eligible": False,
+            "flashable": False,
+            "authorized": False,
+            "commands": [],
+        }
+        tracked = {
+            "schema": "sanhuo.motion_phase2c_screen_candidate.v1",
+            "candidate_id": "MF-T0-H1A",
+            "parent_candidate_id": "MF-T0",
+            "state": "screen_design",
+            "scenario": "h0_plus_h1a_20s",
+            "duration_ms": 20_000,
+            "parent_q7": {"offline_qualified": True},
+            "parent_evidence": {"schedule_sha256": "a" * 64},
+            "screen_schedule": {"commands": 434, "sha256": "b" * 64},
+            "builds": {
+                "clean_builds": 0,
+                "report_sha256": None,
+                "reproducible": None,
+                "status": "not_run",
+            },
+            "gate_results": {f"Q{index}": "not_run" for index in range(8)},
+            "known_limits": ["design only"],
+            "offline_qualified": False,
+            "hardware_state": hardware_state,
+        }
+        runtime = {
+            **copy.deepcopy(tracked),
+            "schema": "sanhuo.motion_phase2c_screen_candidate_runtime.v1",
+            "state": "research_only",
+            "known_limits": [
+                "Q7 independent phase2c-h1a review is still blocked",
+                "offline H1-A evidence does not prove physical robot stability",
+                "H1-A cannot prove 60-second or full-system stability",
+            ],
+            "toolchain_lock_sha256": "c" * 64,
+            "source_sha256": "d" * 64,
+            "firmware": {"sha256": "e" * 64},
+            "elf": {"sha256": "f" * 64},
+            "resources": {},
+            "firmware_capabilities": {},
+            "build_tool_capabilities": {
+                "network": False,
+                "serial": False,
+                "flash": False,
+                "reset": False,
+                "playback": False,
+                "motion": False,
+            },
+        }
         verifier._validate_runtime_manifest_static_binding(
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             runtime_manifest=runtime,
             tracked_manifest=tracked,
         )
 
-        runtime["state"] = "qualified"
+        runtime["parent_candidate_id"] = "MF-T1"
         with self.assertRaisesRegex(
             verifier.VerificationError,
             "tracked static field",
         ):
             verifier._validate_runtime_manifest_static_binding(
-                candidate="MF-P2",
+                candidate="MF-T0-H1A",
                 runtime_manifest=runtime,
                 tracked_manifest=tracked,
             )
@@ -96,8 +124,8 @@ class TrustedVerifierTests(unittest.TestCase):
     def test_precheck_reports_and_summary_are_directly_validated(self) -> None:
         gate_reports = {
             gate: {
-                "schema": "sanhuo.motion_phase2_gate_report.v1",
-                "candidate_id": "MF-P2",
+                "schema": "sanhuo.motion_phase2c_gate_report.v1",
+                "candidate_id": "MF-T0-H1A",
                 "gate": gate,
                 "status": "passed",
                 "evidence": {"gate": gate, "index": index},
@@ -121,18 +149,22 @@ class TrustedVerifierTests(unittest.TestCase):
             "report_sha256": None,
         }
         summary_gates = copy.deepcopy(manifest_gates)
-        summary_gates["Q7"]["reason"] = "independent review credential is absent"
+        summary_gates["Q7"]["reason"] = (
+            "independent phase2c-h1a review credential is absent"
+        )
         summary = {
-            "schema": "sanhuo.motion_phase2_qualification_summary.v2",
-            "candidate_id": "MF-P2",
+            "schema": "sanhuo.motion_phase2c_qualification_summary.v1",
+            "candidate_id": "MF-T0-H1A",
             "precheck_status": "passed",
             "gate_results": summary_gates,
             "q7_receipt_sha256": None,
             "review_mode": None,
             "assurance_limitations": [
-                "Q7 independent review has not produced a trusted receipt"
+                "Q7 independent phase2c-h1a review has not produced a trusted receipt"
             ],
-            "known_risks": ["offline Q0-Q6 precheck is not Q7 qualification"],
+            "known_risks": [
+                "offline H1-A evidence is not hardware or 60-second qualification"
+            ],
             "non_blocking_findings": [],
             "offline_qualified": False,
             "hardware_test_eligible": False,
@@ -141,7 +173,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "hardware_commands": [],
         }
         arguments = {
-            "candidate": "MF-P2",
+            "candidate": "MF-T0-H1A",
             "gate_reports": gate_reports,
             "summary": summary,
             "audit_gates": {
@@ -151,6 +183,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "build": {},
             "trusted_elf": {},
             "trusted_q0": {},
+            "tracked_manifest": {},
         }
 
         with mock.patch.object(
@@ -205,43 +238,45 @@ class TrustedVerifierTests(unittest.TestCase):
                     **{**arguments, "gate_reports": tampered_raw}
                 )
 
-    def test_q2_semantics_require_all_36_locked_tests(self) -> None:
+    def test_q2_semantics_require_all_12_locked_screen_tests(self) -> None:
         counts = {
-            "collected": 36,
-            "executed": 36,
-            "passed": 36,
+            "collected": 12,
+            "executed": 12,
+            "passed": 12,
             "failed": 0,
             "errors": 0,
             "skipped": 0,
             "xfailed": 0,
             "xpassed": 0,
         }
-        capabilities = {"motion": True}
         summary = verifier._validate_gate_semantics(
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             gate="Q2",
             evidence={
                 "tests": {
-                    "paths": ["locked-q2-suite.py"],
-                    "returncode": 0,
-                    "expected_tests": 36,
+                    "path": (
+                        "firmware/sanhuo-stackchan-idf/tests/"
+                        "test_motion_firmware_matrix_phase2c_screen.py"
+                    ),
+                    "expected_tests": 12,
                     "counts": counts,
                     "python_executable_sha256": "1" * 64,
                     "normalized_stdout_sha256": "2" * 64,
-                    "summary": "36 passed",
+                    "summary": "12 passed in <elapsed>",
                 },
                 "compiler_contract": "C++17 warnings-as-errors ASan UBSan",
                 "firmware_compiler_warning_counts": [0, 0],
-                "firmware_capabilities": capabilities,
                 "build_report_sha256": "3" * 64,
             },
-            build={"report_sha256": "3" * 64},
-            trusted_elf={"firmware_capabilities": capabilities},
+            build={"report_sha256": "3" * 64, "reproducibility": {}},
+            trusted_elf={},
             trusted_q0={},
+            tracked_manifest={},
         )
 
-        self.assertEqual(summary["tests"], 36)
+        self.assertEqual(summary["tests"], 12)
 
+    @unittest.skip("Phase 2B remains covered by immutable verifier commit 1d9c0a2")
     def test_p2_q3_binds_exact_public_trajectory_identity(self) -> None:
         properties = {
             "schema": "sanhuo.motion_phase2_q3_properties.v1",
@@ -288,7 +323,7 @@ class TrustedVerifierTests(unittest.TestCase):
         }
 
         summary = verifier._validate_gate_semantics(
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             gate="Q3",
             evidence=evidence,
             build={},
@@ -347,6 +382,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 trusted_q0={},
             )
 
+    @unittest.skip("Phase 2B remains covered by immutable verifier commit 1d9c0a2")
     def test_transport_q3_binds_complete_frozen_schedule_identity(self) -> None:
         properties = {
             "schema": "sanhuo.motion_phase2_q3_properties.v1",
@@ -456,6 +492,75 @@ class TrustedVerifierTests(unittest.TestCase):
                 build={},
                 trusted_elf={},
                 trusted_q0={},
+            )
+
+    def test_phase2c_q3_binds_screen_prefix_and_reversal(self) -> None:
+        tracked = {
+            "parent_evidence": {"schedule_sha256": "1" * 64},
+            "screen_schedule": {
+                "commands": 434,
+                "parent_prefix_sha256": "2" * 64,
+                "sha256": "3" * 64,
+            },
+        }
+        evidence = {
+            "screen_schedule_sha256": "3" * 64,
+            "parent_schedule_sha256": "1" * 64,
+            "parent_prefix_sha256": "2" * 64,
+            "metrics": {
+                "command_count": 434,
+                "contains_known_reversal": True,
+                "last_command_at_ms": 19_400,
+            },
+            "parameters": {
+                "ack_budget_ms": 25,
+                "audio": False,
+                "automatic_reset": False,
+                "automatic_retry": False,
+                "face": False,
+                "full_timeline": False,
+                "runtime_override": False,
+                "tick_ms": 20,
+                "uac": False,
+            },
+            "known_reversal": [
+                {
+                    "axis": "pan",
+                    "at_ms": 17_100,
+                    "source_at_ms": 17_100,
+                },
+                {
+                    "axis": "tilt",
+                    "at_ms": 17_100,
+                    "source_at_ms": 17_100,
+                },
+            ],
+        }
+        summary = verifier._validate_gate_semantics(
+            candidate="MF-T0-H1A",
+            gate="Q3",
+            evidence=evidence,
+            build={"reproducibility": {}},
+            trusted_elf={},
+            trusted_q0={},
+            tracked_manifest=tracked,
+        )
+        self.assertEqual(summary["known_reversal_at_ms"], 17_100)
+
+        tampered = copy.deepcopy(evidence)
+        tampered["known_reversal"][0]["at_ms"] = 16_900
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Q3 screen-prefix semantics drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T0-H1A",
+                gate="Q3",
+                evidence=tampered,
+                build={"reproducibility": {}},
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest=tracked,
             )
 
     def approved_report(
@@ -674,7 +779,7 @@ class TrustedVerifierTests(unittest.TestCase):
             ),
             lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             action="build",
         )
 
@@ -695,15 +800,15 @@ class TrustedVerifierTests(unittest.TestCase):
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-P2",
+            "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-T0-H1A",
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_BINARY_ROOT=/private/tmp/output/binaries/MF-P2",
+            "ACTION_BINARY_ROOT=/private/tmp/output/binaries/MF-T0-H1A",
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_OUTPUT_00=/private/tmp/output/artifacts/MF-P2/build-report.json",
+            "ACTION_OUTPUT_00=/private/tmp/output/artifacts/MF-T0-H1A/build-report.json",
             " ".join(command),
         )
         self.assertIn(
@@ -749,7 +854,7 @@ class TrustedVerifierTests(unittest.TestCase):
             ),
             lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             action="qualify",
         )
         self.assertIn(
@@ -762,7 +867,7 @@ class TrustedVerifierTests(unittest.TestCase):
             *(f"q{index}-report.json" for index in range(7)),
         ):
             self.assertIn(
-                f"/private/tmp/output/artifacts/MF-P2/{filename}",
+                f"/private/tmp/output/artifacts/MF-T0-H1A/{filename}",
                 " ".join(qualify_command),
             )
 
@@ -846,9 +951,9 @@ class TrustedVerifierTests(unittest.TestCase):
             for path in paths.values():
                 path.mkdir()
             (paths["runtime"] / "tmp").mkdir()
-            action_artifacts = paths["output"] / "artifacts/MF-P2"
-            action_binaries = paths["output"] / "binaries/MF-P2"
-            prior_artifacts = paths["output"] / "artifacts/MF-T0"
+            action_artifacts = paths["output"] / "artifacts/MF-T0-H1A"
+            action_binaries = paths["output"] / "binaries/MF-T0-H1A"
+            prior_artifacts = paths["output"] / "artifacts/MF-T1-H1A"
             action_artifacts.mkdir(parents=True)
             action_binaries.mkdir(parents=True)
             prior_artifacts.mkdir(parents=True)
@@ -1089,14 +1194,17 @@ class TrustedVerifierTests(unittest.TestCase):
                 ),
             )
 
-    def test_only_the_four_fixed_candidates_are_run(self) -> None:
+    def test_only_the_three_fixed_phase2c_candidates_are_run(self) -> None:
         self.assertEqual(
             verifier.CANDIDATES,
-            ("MF-P2", "MF-T0", "MF-T1", "MF-T2"),
+            ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A"),
         )
         self.assertEqual(
             verifier.TARGET_REQUIRED_COMMITS,
-            ("8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",),
+            (
+                "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
+                "e9b8675944742cb729883ca767f5a5a98b773954",
+            ),
         )
         self.assertEqual(
             verifier.container_actions(),
@@ -1150,7 +1258,9 @@ class TrustedVerifierTests(unittest.TestCase):
             trigger = control / "trigger"
             artifact = output / "artifact.json"
             lifecycle_token = "com.sanhuo.q7.fedcba9876543210fedcba9876543210"
-            python_executable = Path(sys.executable).resolve()
+            python_executable = Path(
+                "/Applications/Xcode.app/Contents/Developer/usr/bin/python3"
+            )
             profile = "\n".join(
                 [
                     "(version 1)",
@@ -1398,8 +1508,8 @@ class TrustedVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "output"
-            artifacts = output / "artifacts/MF-P2"
-            binaries = output / "binaries/MF-P2"
+            artifacts = output / "artifacts/MF-T0-H1A"
+            binaries = output / "binaries/MF-T0-H1A"
             run_tree = artifacts / "run-12345"
             run_tree.mkdir(parents=True)
             binaries.mkdir(parents=True)
@@ -1414,20 +1524,24 @@ class TrustedVerifierTests(unittest.TestCase):
 
             verifier._snapshot_persistent_matrix_output(output, sealed)
 
-            self.assertFalse((sealed / "artifacts/MF-P2/run-12345").exists())
-            self.assertTrue((sealed / "artifacts/MF-P2/build-report.json").is_file())
+            self.assertFalse(
+                (sealed / "artifacts/MF-T0-H1A/run-12345").exists()
+            )
+            self.assertTrue(
+                (sealed / "artifacts/MF-T0-H1A/build-report.json").is_file()
+            )
             self.assertEqual(
-                (sealed / "binaries/MF-P2/firmware.elf").read_bytes(),
+                (sealed / "binaries/MF-T0-H1A/firmware.elf").read_bytes(),
                 b"elf",
             )
 
     def test_trusted_action_delta_rejects_cross_stage_changes(self) -> None:
         build_files = {
-            path.format(candidate="MF-P2"): "a" * 64
+            path.format(candidate="MF-T0-H1A"): "a" * 64
             for path in verifier.ACTION_ADDED_FILES["build"]
         }
         receipt = verifier._validate_action_delta(
-            candidate="MF-P2",
+            candidate="MF-T0-H1A",
             action="build",
             before={},
             after=build_files,
@@ -1435,30 +1549,30 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertEqual(receipt["added_files"], sorted(build_files))
 
         unexpected = dict(build_files)
-        unexpected["artifacts/MF-P2/q0-report.json"] = "b" * 64
+        unexpected["artifacts/MF-T0-H1A/q0-report.json"] = "b" * 64
         with self.assertRaisesRegex(
             verifier.VerificationError,
             "file delta drift",
         ):
             verifier._validate_action_delta(
-                candidate="MF-P2",
+                candidate="MF-T0-H1A",
                 action="build",
                 before={},
                 after=unexpected,
             )
 
         qualify_files = {
-            path.format(candidate="MF-P2"): "c" * 64
+            path.format(candidate="MF-T0-H1A"): "c" * 64
             for path in verifier.ACTION_ADDED_FILES["qualify"]
         }
         tampered_before = dict(build_files)
-        tampered_before["artifacts/MF-P2/build-report.json"] = "d" * 64
+        tampered_before["artifacts/MF-T0-H1A/build-report.json"] = "d" * 64
         with self.assertRaisesRegex(
             verifier.VerificationError,
             "changed prior persistent evidence",
         ):
             verifier._validate_action_delta(
-                candidate="MF-P2",
+                candidate="MF-T0-H1A",
                 action="qualify",
                 before=build_files,
                 after={**tampered_before, **qualify_files},
@@ -1677,7 +1791,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "primary": self.approved_report("primary"),
             "verifier": self.approved_report("verifier"),
         }
-        reports["verifier"]["candidates"]["MF-T2"]["elf_sha256"] = "f" * 64
+        reports["verifier"]["candidates"]["MF-T2-H1A"]["elf_sha256"] = "f" * 64
 
         with self.assertRaisesRegex(
             verifier.VerificationError,

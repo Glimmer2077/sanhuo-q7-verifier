@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 
 
-CANDIDATES = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
+CANDIDATES = ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A")
 ACTIONS = ("build", "qualify", "audit")
 CLI = Path(
     os.environ.get("SANHUO_Q7_CHECKOUT", "/workspace")
     + "/firmware/sanhuo-stackchan-idf/"
-    "tools/motion_firmware_matrix/cli_phase2.py"
+    "tools/motion_firmware_matrix/cli_phase2c.py"
 )
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_SINGLE_FAILURE_EXCERPT_BYTES = 768
@@ -60,25 +60,18 @@ def derive_capabilities(
     if candidate not in CANDIDATES or not symbols:
         raise RuntimeError("ELF executable symbol evidence is missing")
     uart = _symbol_contains(symbols, "uart_write_bytes")
-    if candidate == "MF-P2":
-        required_motion = (
-            "M5StackChan_Class::begin",
-            "Motion::move(",
-            "SCSCL::WritePos",
-        )
-        ina226 = _symbol_contains(
-            symbols,
-            "M5StackChan_Class::getBatteryVoltage",
-        )
-        if not ina226:
-            raise RuntimeError("P2 INA226 capability is absent")
-    else:
-        required_motion = ("sendStrict(", "executeCandidate()")
-        ina226 = False
-    if not all(_symbol_contains(symbols, marker) for marker in required_motion):
+    required_motion = (
+        "sendStrict",
+        "attemptSafeCenter",
+        "waitForArm",
+        "runH0",
+    )
+    required_transport = ("uart_write_bytes", "usb_serial_jtag_read_bytes")
+    if not all(
+        _symbol_contains(symbols, marker)
+        for marker in required_motion + required_transport
+    ):
         raise RuntimeError(f"{candidate} motion capability is absent")
-    if not uart:
-        raise RuntimeError(f"{candidate} UART capability is absent")
     return {
         "uart": True,
         "motion": True,
@@ -91,20 +84,12 @@ def derive_capabilities(
                 "i2s_channel_write(",
             )
         ),
-        "usb": any(
-            _symbol_contains(symbols, marker)
-            for marker in (
-                "TinyUSBDriver",
-                "USBCDC::begin(",
-                "USBDeviceClass::begin(",
-                "tud_task(",
-            )
-        ),
+        "usb": True,
         "face": any(
             _symbol_contains(symbols, marker)
             for marker in ("FaceRenderer", "MouthRenderer", "lv_obj_")
         ),
-        "ina226": ina226,
+        "ina226": False,
     }
 
 
@@ -261,19 +246,14 @@ def run_selected_action() -> dict[str, object]:
 
 
 def _elf_tools(candidate: str) -> tuple[Path, Path]:
-    if candidate == "MF-P2":
-        root = (
-            Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
-            / "packages/toolchain-xtensa-esp32s3/bin"
-        )
-        prefix = "xtensa-esp32s3-elf"
-    else:
-        root = (
-            Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
-            / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
-            "xtensa-esp-elf/bin"
-        )
-        prefix = "xtensa-esp-elf"
+    if candidate not in CANDIDATES:
+        raise RuntimeError("trusted ELF candidate is invalid")
+    root = (
+        Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
+        / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
+        "xtensa-esp-elf/bin"
+    )
+    prefix = "xtensa-esp-elf"
     return root / f"{prefix}-objcopy", root / f"{prefix}-nm"
 
 

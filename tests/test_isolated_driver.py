@@ -10,39 +10,50 @@ import isolated_driver
 
 
 class IsolatedDriverTests(unittest.TestCase):
+    def test_phase2c_h1a_profile_is_fixed(self) -> None:
+        self.assertEqual(
+            isolated_driver.CANDIDATES,
+            ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A"),
+        )
+        self.assertEqual(isolated_driver.CLI.name, "cli_phase2c.py")
+
     def test_driver_uses_fixed_actions_without_shell(self) -> None:
         commands = isolated_driver.matrix_commands()
 
-        self.assertEqual(len(commands), 12)
+        self.assertEqual(len(commands), 9)
         self.assertEqual(
             commands[0][-3:],
-            ["build", "--candidate", "MF-P2"],
+            ["build", "--candidate", "MF-T0-H1A"],
         )
         self.assertEqual(
             commands[-1][-3:],
-            ["audit", "--candidate", "MF-T2"],
+            ["audit", "--candidate", "MF-T2-H1A"],
         )
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertTrue(all("sh" not in command[:1] for command in commands))
 
     def test_trusted_capability_derivation_rejects_missing_motion(self) -> None:
-        p2_symbols = {
+        screen_symbols = {
             "uart_write_bytes",
-            "M5StackChan_Class::begin",
-            "Motion::move(int, int, int)",
-            "SCSCL::WritePos",
-            "M5StackChan_Class::getBatteryVoltage",
+            "usb_serial_jtag_read_bytes",
+            "sendStrict",
+            "attemptSafeCenter",
+            "waitForArm",
+            "runH0",
         }
 
-        capabilities = isolated_driver.derive_capabilities("MF-P2", p2_symbols)
+        capabilities = isolated_driver.derive_capabilities(
+            "MF-T0-H1A",
+            screen_symbols,
+        )
 
         self.assertTrue(capabilities["motion"])
         self.assertTrue(capabilities["uart"])
-        self.assertTrue(capabilities["ina226"])
-        self.assertFalse(capabilities["usb"])
+        self.assertFalse(capabilities["ina226"])
+        self.assertTrue(capabilities["usb"])
         with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
             isolated_driver.derive_capabilities(
-                "MF-T0",
+                "MF-T1-H1A",
                 {"uart_write_bytes", "executeCandidate()"},
             )
 
@@ -108,7 +119,7 @@ class IsolatedDriverTests(unittest.TestCase):
             root = Path(temporary)
             runtime = root / "runtime"
             output = root / "output"
-            cli = root / "cli_phase2.py"
+            cli = root / "cli_phase2c.py"
             cli.write_text("# fixture\n", encoding="utf-8")
             with (
                 mock.patch.object(isolated_driver, "CLI", cli),
