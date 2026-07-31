@@ -3462,6 +3462,11 @@ def _validate_gate_semantics(
             "second_arm_accepted": 0,
         }
     if gate == "Q5":
+        expected_collision_max = {
+            "MF-T0-H1A": 434,
+            "MF-T1-H1A": 364,
+            "MF-T2-H1A": 200,
+        }[candidate]
         _require(
             evidence.get("schema") == "sanhuo.motion_phase2c_system_matrix.v1"
             and evidence.get("candidate_id") == candidate
@@ -3480,7 +3485,7 @@ def _validate_gate_semantics(
             and evidence.get("feedback_collision_safe_stops") == 100
             and 1 <= evidence.get("feedback_collision_min_sent", 0)
             and evidence.get("feedback_collision_max_sent")
-            == evidence.get("events_per_run")
+            == expected_collision_max
             and evidence.get("post_failure_performance_writes") == 0
             and evidence.get("safe_center_attempts_maximum") == 1
             and evidence.get("automatic_retry") is False

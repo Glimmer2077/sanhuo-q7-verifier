@@ -585,6 +585,63 @@ class TrustedVerifierTests(unittest.TestCase):
         )
         self.assertEqual(t2_summary["commands"], 206)
 
+    def test_phase2c_q5_binds_t2_collision_window(self) -> None:
+        evidence = {
+            "schema": "sanhuo.motion_phase2c_system_matrix.v1",
+            "candidate_id": "MF-T2-H1A",
+            "scenario": "h0_plus_h1a_20s",
+            "virtual_clock_duration_ms": 20_000,
+            "seeds": 100,
+            "repeat": 2,
+            "runs": 200,
+            "events_per_run": 206,
+            "deterministic": True,
+            "jitter_ms": [0, 5],
+            "sparse_tick_delay_ms": 20,
+            "blocking_delay_ms": 40,
+            "maximum_lateness_ms": 60,
+            "feedback_collision_safe_stops": 100,
+            "feedback_collision_min_sent": 1,
+            "feedback_collision_max_sent": 200,
+            "post_failure_performance_writes": 0,
+            "safe_center_attempts_maximum": 1,
+            "automatic_retry": False,
+            "automatic_reset": False,
+            "hardware_used": False,
+            "all_seed_traces_sha256": "1" * 64,
+            "golden_trace_sha256": "2" * 64,
+        }
+        evidence["report_sha256"] = verifier.sha256_json(evidence)
+        summary = verifier._validate_gate_semantics(
+            candidate="MF-T2-H1A",
+            gate="Q5",
+            evidence=evidence,
+            build={"reproducibility": {}},
+            trusted_elf={},
+            trusted_q0={},
+            tracked_manifest={"screen_schedule": {"commands": 206}},
+        )
+        self.assertEqual(summary["feedback_collision_safe_stops"], 100)
+
+        tampered = copy.deepcopy(evidence)
+        tampered["feedback_collision_max_sent"] = 206
+        tampered_payload = dict(tampered)
+        tampered_payload.pop("report_sha256")
+        tampered["report_sha256"] = verifier.sha256_json(tampered_payload)
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Q5 system semantics drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T2-H1A",
+                gate="Q5",
+                evidence=tampered,
+                build={"reproducibility": {}},
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest={"screen_schedule": {"commands": 206}},
+            )
+
     def approved_report(
         self,
         role: str,
