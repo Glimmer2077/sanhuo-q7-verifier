@@ -971,22 +971,27 @@ def _compile_q5_harness(
     )
 
 
+def _target_q5_build_layout(checkout: Path) -> dict[str, Path]:
+    project_root = checkout / "firmware/sanhuo-stackchan-idf"
+    return {
+        "project_root": project_root,
+        "payload_root": Path("tools/motion_firmware_matrix/payloads/PT"),
+        "source": Path(
+            "tests/host/motion_matrix/phase2c_screen_executor.cpp"
+        ),
+    }
+
+
 def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
     """Execute exact Q3 schedules, then reproduce the target Q5 artifacts."""
 
     checkout = Path(os.environ["SANHUO_Q7_CHECKOUT"])
-    payload_root = (
-        checkout
-        / "firmware/sanhuo-stackchan-idf/tools/"
-        "motion_firmware_matrix/payloads/PT"
-    )
+    target_layout = _target_q5_build_layout(checkout)
+    project_root = target_layout["project_root"]
+    payload_root = project_root / target_layout["payload_root"]
     core = payload_root / "phase2_executor_core.h"
     adapter = payload_root / "phase2c_screen_executor.h"
-    target_harness = (
-        checkout
-        / "firmware/sanhuo-stackchan-idf/tests/host/motion_matrix/"
-        "phase2c_screen_executor.cpp"
-    )
+    target_harness = project_root / target_layout["source"]
     if not core.is_file() or core.is_symlink():
         raise RuntimeError("target Phase 2C executor core is missing or indirect")
     if not adapter.is_file() or adapter.is_symlink():
@@ -1100,11 +1105,11 @@ def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
         target_executable = target_root / "phase2c-screen-executor"
         _compile_q5_harness(
             host_cxx=host_cxx,
-            payload_root=payload_root,
+            payload_root=target_layout["payload_root"],
             include_root=target_root,
-            source=target_harness,
+            source=target_layout["source"],
             executable=target_executable,
-            cwd=target_root,
+            cwd=project_root,
         )
         target_executable_sha256 = hashlib.sha256(
             target_executable.read_bytes()

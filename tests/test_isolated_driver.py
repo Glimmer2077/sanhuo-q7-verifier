@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import os
 import tempfile
@@ -79,6 +80,80 @@ class IsolatedDriverTests(unittest.TestCase):
             source.index("target_executable_sha256 ="),
             source.index("target_stdout = _run_checked("),
         )
+
+    def test_target_q5_rebuild_uses_target_relative_compile_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+
+            layout = isolated_driver._target_q5_build_layout(checkout)
+
+        self.assertEqual(
+            layout["project_root"],
+            checkout / "firmware/sanhuo-stackchan-idf",
+        )
+        self.assertEqual(
+            layout["payload_root"],
+            Path("tools/motion_firmware_matrix/payloads/PT"),
+        )
+        self.assertEqual(
+            layout["source"],
+            Path("tests/host/motion_matrix/phase2c_screen_executor.cpp"),
+        )
+
+    def test_relative_q5_compile_is_stable_across_checkout_paths(self) -> None:
+        host_cxx = Path("/usr/bin/c++")
+        if not host_cxx.is_file():
+            self.skipTest("Apple host compiler is unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def compile_fixture(name: str) -> str:
+                project_root = root / name / "firmware/sanhuo-stackchan-idf"
+                payload_root = project_root / "tools/payloads"
+                source = project_root / "tests/host/harness.cpp"
+                generated_root = root / f"generated-{name}"
+                payload_root.mkdir(parents=True)
+                source.parent.mkdir(parents=True)
+                generated_root.mkdir()
+                (payload_root / "payload.h").write_text(
+                    "#pragma once\ninline int payload_value() { return 7; }\n",
+                    encoding="utf-8",
+                )
+                (generated_root / "generated.h").write_text(
+                    "#pragma once\ninline int generated_value() { return 5; }\n",
+                    encoding="utf-8",
+                )
+                source.write_text(
+                    '#include <cassert>\n#include "payload.h"\n'
+                    '#include "generated.h"\nint main() {\n'
+                    "  assert(payload_value() + generated_value() == 12);\n"
+                    "  return 0;\n}\n",
+                    encoding="utf-8",
+                )
+                executable = generated_root / "q5-harness"
+                with mock.patch.object(
+                    isolated_driver,
+                    "_closed_environment",
+                    return_value={
+                        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                        "TMPDIR": str(root),
+                    },
+                ):
+                    isolated_driver._compile_q5_harness(
+                        host_cxx=host_cxx,
+                        payload_root=Path("tools/payloads"),
+                        include_root=generated_root,
+                        source=Path("tests/host/harness.cpp"),
+                        executable=executable,
+                        cwd=project_root,
+                    )
+                return hashlib.sha256(executable.read_bytes()).hexdigest()
+
+            first = compile_fixture("short")
+            second = compile_fixture("a-much-longer-checkout-location")
+
+        self.assertEqual(first, second)
 
     def test_trusted_capability_derivation_rejects_missing_motion(self) -> None:
         screen_symbols = {
