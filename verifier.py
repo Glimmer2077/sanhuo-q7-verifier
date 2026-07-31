@@ -3044,23 +3044,37 @@ def _validate_pytest_evidence(
 
 
 def _validate_q3_properties(value: Any) -> dict[str, Any]:
-    _require(
-        type(value) is dict
-        and value.get("schema") == "sanhuo.motion_phase2_q3_properties.v1"
-        and value.get("cases") == 10_000
-        and value.get("p2_mapping_checks") == 10_000
-        and value.get("transport_candidate_checks") == 30_000
-        and value.get("deterministic") is True
-        and value.get("hardware_used") is False
-        and value.get("maximum_t1_hold_error_raw") == 2
-        and value.get("maximum_t2_proxy_error_raw") == 2
-        and value.get("maximum_t2_segment_ms") == 400
-        and value.get("raw_envelope") == {
+    expected = {
+        "schema": "sanhuo.motion_phase2_q3_properties.v1",
+        "cases": 10_000,
+        "seed": 53_361,
+        "tick_jumps_ms": [20, 40, 100, 250],
+        "boundary_cases": 3_114,
+        "reversal_cases": 9_992,
+        "start_equals_end_cases": 951,
+        "p2_mapping_checks": 10_000,
+        "transport_candidate_checks": 30_000,
+        "maximum_t1_hold_error_raw": 2,
+        "maximum_t2_proxy_error_raw": 2,
+        "maximum_t2_segment_ms": 390,
+        "raw_envelope": {
             "pan": [360, 560],
             "tilt": [620, 754],
+        },
+        "trace_sha256": (
+            "4ff0768cd5e4be26c85080c822abc78dafab4fe4645bafcefda46a9106196078"
+        ),
+        "deterministic": True,
+        "hardware_used": False,
+    }
+    _require(
+        type(value) is dict
+        and {
+            key: item
+            for key, item in value.items()
+            if key != "report_sha256"
         }
-        and value.get("trace_sha256")
-        == "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f",
+        == expected,
         "Q3 property evidence is invalid",
     )
     _validate_self_hash(value, label="Q3 property")

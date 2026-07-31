@@ -246,19 +246,24 @@ class TrustedVerifierTests(unittest.TestCase):
         properties = {
             "schema": "sanhuo.motion_phase2_q3_properties.v1",
             "cases": 10_000,
+            "seed": 53_361,
+            "tick_jumps_ms": [20, 40, 100, 250],
+            "boundary_cases": 3_114,
+            "reversal_cases": 9_992,
+            "start_equals_end_cases": 951,
             "p2_mapping_checks": 10_000,
             "transport_candidate_checks": 30_000,
             "deterministic": True,
             "hardware_used": False,
             "maximum_t1_hold_error_raw": 2,
             "maximum_t2_proxy_error_raw": 2,
-            "maximum_t2_segment_ms": 400,
+            "maximum_t2_segment_ms": 390,
             "raw_envelope": {
                 "pan": [360, 560],
                 "tilt": [620, 754],
             },
             "trace_sha256": (
-                "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+                "4ff0768cd5e4be26c85080c822abc78dafab4fe4645bafcefda46a9106196078"
             ),
         }
         properties["report_sha256"] = verifier.sha256_json(properties)
@@ -292,6 +297,26 @@ class TrustedVerifierTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["cases"], 10_000)
+        changed_properties = copy.deepcopy(evidence)
+        changed_properties["randomized_properties"]["seed"] = 53_362
+        changed_payload = dict(changed_properties["randomized_properties"])
+        changed_payload.pop("report_sha256")
+        changed_properties["randomized_properties"]["report_sha256"] = (
+            verifier.sha256_json(changed_payload)
+        )
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Q3 property evidence is invalid",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-P2",
+                gate="Q3",
+                evidence=changed_properties,
+                build={},
+                trusted_elf={},
+                trusted_q0={},
+            )
+
         too_early = copy.deepcopy(evidence)
         too_early["last"]["at_ms"] = 56_999
         with self.assertRaisesRegex(
@@ -326,19 +351,24 @@ class TrustedVerifierTests(unittest.TestCase):
         properties = {
             "schema": "sanhuo.motion_phase2_q3_properties.v1",
             "cases": 10_000,
+            "seed": 53_361,
+            "tick_jumps_ms": [20, 40, 100, 250],
+            "boundary_cases": 3_114,
+            "reversal_cases": 9_992,
+            "start_equals_end_cases": 951,
             "p2_mapping_checks": 10_000,
             "transport_candidate_checks": 30_000,
             "deterministic": True,
             "hardware_used": False,
             "maximum_t1_hold_error_raw": 2,
             "maximum_t2_proxy_error_raw": 2,
-            "maximum_t2_segment_ms": 400,
+            "maximum_t2_segment_ms": 390,
             "raw_envelope": {
                 "pan": [360, 560],
                 "tilt": [620, 754],
             },
             "trace_sha256": (
-                "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+                "4ff0768cd5e4be26c85080c822abc78dafab4fe4645bafcefda46a9106196078"
             ),
         }
         properties["report_sha256"] = verifier.sha256_json(properties)
