@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -239,7 +242,7 @@ class TrustedVerifierTests(unittest.TestCase):
 
         self.assertEqual(summary["tests"], 36)
 
-    def test_p2_q3_semantics_accept_final_center_before_60_seconds(self) -> None:
+    def test_p2_q3_binds_exact_public_trajectory_identity(self) -> None:
         properties = {
             "schema": "sanhuo.motion_phase2_q3_properties.v1",
             "cases": 10_000,
@@ -254,12 +257,17 @@ class TrustedVerifierTests(unittest.TestCase):
                 "pan": [360, 560],
                 "tilt": [620, 754],
             },
-            "trace_sha256": "1" * 64,
+            "trace_sha256": (
+                "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+            ),
         }
         properties["report_sha256"] = verifier.sha256_json(properties)
         evidence = {
             "randomized_properties": properties,
             "public_target_count": 58,
+            "public_targets_sha256": (
+                "e188788005e5f262de294788e61a17c56a492239f1445779d87c40d45b111117"
+            ),
             "system_duration_ms": 60_000,
             "first": {"at_ms": 0, "yaw_tenths": 0, "pitch_tenths": 0},
             "last": {
@@ -267,6 +275,11 @@ class TrustedVerifierTests(unittest.TestCase):
                 "yaw_tenths": 0,
                 "pitch_tenths": 0,
             },
+            "yaw_tenths_range": [-350, 350],
+            "pitch_tenths_range": [-120, 140],
+            "header_sha256": (
+                "6eb9f679f65b47e140c0f1cd69a08b04b42c5be78240257030289c3090f9e007"
+            ),
         }
 
         summary = verifier._validate_gate_semantics(
@@ -289,6 +302,127 @@ class TrustedVerifierTests(unittest.TestCase):
                 candidate="MF-P2",
                 gate="Q3",
                 evidence=too_early,
+                build={},
+                trusted_elf={},
+                trusted_q0={},
+            )
+
+        changed_middle_target = copy.deepcopy(evidence)
+        changed_middle_target["header_sha256"] = "2" * 64
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "MF-P2 Q3 public target semantics drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-P2",
+                gate="Q3",
+                evidence=changed_middle_target,
+                build={},
+                trusted_elf={},
+                trusted_q0={},
+            )
+
+    def test_transport_q3_binds_complete_frozen_schedule_identity(self) -> None:
+        properties = {
+            "schema": "sanhuo.motion_phase2_q3_properties.v1",
+            "cases": 10_000,
+            "p2_mapping_checks": 10_000,
+            "transport_candidate_checks": 30_000,
+            "deterministic": True,
+            "hardware_used": False,
+            "maximum_t1_hold_error_raw": 2,
+            "maximum_t2_proxy_error_raw": 2,
+            "maximum_t2_segment_ms": 400,
+            "raw_envelope": {
+                "pan": [360, 560],
+                "tilt": [620, 754],
+            },
+            "trace_sha256": (
+                "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+            ),
+        }
+        properties["report_sha256"] = verifier.sha256_json(properties)
+        counts = {
+            "collected": 5,
+            "executed": 5,
+            "passed": 5,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "xfailed": 0,
+            "xpassed": 0,
+        }
+        evidence = {
+            "randomized_properties": properties,
+            "schedule_sha256": (
+                "a5f5b9dff057cbc3182d0ad8f5ba7c6b9c48da2a4f34e5d81d2f5000408a5446"
+            ),
+            "source": {
+                "baseline_commit": "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
+                "replay_input_sha256": (
+                    "7dad9594f0a97a7cba825d05f6e49905f40ded8d3182c471b088c9650b0bf259"
+                ),
+                "trace_sha256": (
+                    "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+                ),
+                "trajectory_table_sha256": (
+                    "85637c041d099b1a647924e90d39fee363085982a8d3206382ca9b34b224c3d4"
+                ),
+            },
+            "parameters": {
+                "ack_budget_ms": 25,
+                "automatic_retry": False,
+                "pan_error_threshold_raw": 3,
+                "pan_linear_error_raw": None,
+                "pan_max_segment_ms": None,
+                "pan_strategy": "adaptive_hold",
+                "runtime_override": False,
+                "speed": 0,
+                "tick_ms": 20,
+                "tilt_strategy": "every_changed_raw",
+            },
+            "metrics": {
+                "final_pan_raw": 459,
+                "final_tilt_raw": 678,
+                "mandatory_boundaries": 47,
+                "mandatory_boundaries_preserved": True,
+                "max_pan_proxy_error_raw": 2,
+                "max_pan_segment_ms": 20,
+                "pan_transactions": 661,
+                "theoretical_uart_bytes": 20_672,
+                "tilt_transactions": 427,
+                "total_transactions": 1_088,
+            },
+            "property_test": {
+                "paths": ["locked-q3-suite.py"],
+                "returncode": 0,
+                "expected_tests": 5,
+                "counts": counts,
+                "python_executable_sha256": "1" * 64,
+                "normalized_stdout_sha256": "2" * 64,
+                "summary": "5 passed",
+            },
+        }
+
+        verifier._validate_gate_semantics(
+            candidate="MF-T1",
+            gate="Q3",
+            evidence=evidence,
+            build={},
+            trusted_elf={},
+            trusted_q0={},
+        )
+
+        changed_source = copy.deepcopy(evidence)
+        changed_source["source"]["trace_sha256"] = "3" * 64
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "MF-T1 Q3 schedule semantics drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T1",
+                gate="Q3",
+                evidence=changed_source,
                 build={},
                 trusted_elf={},
                 trusted_q0={},
@@ -508,6 +642,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 Path("/tmp/idf"),
                 Path("/tmp/espressif"),
             ),
+            lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
             candidate="MF-P2",
             action="build",
@@ -525,6 +660,10 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn("CACHE=/private/tmp/cache", " ".join(command))
         self.assertIn("RUNTIME_HOME=/private/tmp/runtime-home", " ".join(command))
         self.assertIn("OUTPUT_ROOT=/private/tmp/output", " ".join(command))
+        self.assertIn(
+            "LIFECYCLE_TOKEN=com.sanhuo.q7.0123456789abcdef0123456789abcdef",
+            " ".join(command),
+        )
         self.assertIn(
             "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-P2",
             " ".join(command),
@@ -578,6 +717,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 Path("/tmp/idf"),
                 Path("/tmp/espressif"),
             ),
+            lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
             candidate="MF-P2",
             action="qualify",
@@ -711,6 +851,8 @@ class TrustedVerifierTests(unittest.TestCase):
                 f"RUNTIME_HOME={paths['runtime']}",
                 "-D",
                 f"OUTPUT_ROOT={paths['output']}",
+                "-D",
+                "LIFECYCLE_TOKEN=com.sanhuo.q7.0123456789abcdef0123456789abcdef",
                 "-D",
                 f"ACTION_ARTIFACT_ROOT={paths['runtime'] / 'unused-artifacts'}",
                 "-D",
@@ -962,6 +1104,246 @@ class TrustedVerifierTests(unittest.TestCase):
                     runtime_output,
                     root / "rejected",
                 )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file(),
+        "requires the macOS sandbox used by the verifier",
+    )
+    def test_lifecycle_token_finds_and_kills_detached_sandbox_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "output"
+            output.mkdir()
+            control = root / "control"
+            control.mkdir()
+            ready = control / "ready"
+            trigger = control / "trigger"
+            artifact = output / "artifact.json"
+            lifecycle_token = "com.sanhuo.q7.fedcba9876543210fedcba9876543210"
+            python_executable = Path(sys.executable).resolve()
+            profile = "\n".join(
+                [
+                    "(version 1)",
+                    "(deny default)",
+                    (
+                        "(allow process-exec "
+                        '(subpath "/Applications/Xcode.app/Contents/Developer"))'
+                    ),
+                    "(allow process-fork)",
+                    "(allow signal)",
+                    "(allow sysctl-read)",
+                    (
+                        "(allow mach-lookup "
+                        f'(global-name "{lifecycle_token}"))'
+                    ),
+                    "(allow file-read*)",
+                    (
+                        "(allow file-write* "
+                        f'(subpath "{output}") '
+                        f'(subpath "{control}") '
+                        '(literal "/dev/null"))'
+                    ),
+                ]
+            )
+            detached_writer = "\n".join(
+                [
+                    "import os, time",
+                    "from pathlib import Path",
+                    f"artifact=Path({json.dumps(str(artifact))})",
+                    f"ready=Path({json.dumps(str(ready))})",
+                    f"trigger=Path({json.dumps(str(trigger))})",
+                    "if os.fork(): os._exit(0)",
+                    "os.setsid()",
+                    "if os.fork(): os._exit(0)",
+                    "handle=artifact.open('w+b', buffering=0)",
+                    "handle.write(b'complete')",
+                    "os.fsync(handle.fileno())",
+                    "ready.write_text(str(os.getpid()), encoding='utf-8')",
+                    "while not trigger.exists():",
+                    "    time.sleep(0.01)",
+                    "handle.seek(0)",
+                    "handle.write(b'tampered')",
+                    "os.fsync(handle.fileno())",
+                    "handle.close()",
+                ]
+            )
+            launched = subprocess.run(
+                [
+                    "/usr/bin/sandbox-exec",
+                    "-p",
+                    profile,
+                    str(python_executable),
+                    "-I",
+                    "-c",
+                    detached_writer,
+                ],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            self.assertEqual(launched.returncode, 0)
+
+            deadline = time.monotonic() + 5
+            while not ready.is_file() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.is_file(), "detached writer did not become ready")
+            detached_pid = int(ready.read_text(encoding="utf-8"))
+
+            try:
+                self.assertTrue(
+                    verifier._process_has_sandbox_lifecycle_token(
+                        detached_pid,
+                        lifecycle_token,
+                    )
+                )
+                terminated = verifier._terminate_sandbox_lifecycle_processes(
+                    lifecycle_token,
+                )
+                self.assertIn(detached_pid, {identity.pid for identity in terminated})
+
+                deadline = time.monotonic() + 5
+                while verifier._process_identity(detached_pid) is not None:
+                    if time.monotonic() >= deadline:
+                        self.fail("detached sandbox writer survived lifecycle cleanup")
+                    time.sleep(0.01)
+                trigger.write_text("continue", encoding="utf-8")
+                self.assertEqual(
+                    artifact.read_bytes(),
+                    b"complete",
+                )
+            finally:
+                try:
+                    os.kill(detached_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file(),
+        "requires the macOS sandbox used by the verifier",
+    )
+    def test_lifecycle_token_survives_nested_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            control = root / "control"
+            control.mkdir()
+            ready = control / "ready"
+            trigger = control / "trigger"
+            lifecycle_token = "com.sanhuo.q7.0123456789abcdef0123456789abcdef"
+            profile = "\n".join(
+                [
+                    "(version 1)",
+                    "(deny default)",
+                    "(allow process-exec)",
+                    "(allow sysctl-read)",
+                    "(allow file-read*)",
+                    f'(allow file-write* (subpath "{control}"))',
+                    (
+                        "(allow mach-lookup "
+                        f'(global-name "{lifecycle_token}"))'
+                    ),
+                ]
+            )
+            nested = "\n".join(
+                [
+                    "(version 1)",
+                    "(deny default)",
+                    "(allow sysctl-read)",
+                    "(allow file-read*)",
+                    f'(allow file-write* (subpath "{control}"))',
+                ]
+            )
+            script = "\n".join(
+                [
+                    "import ctypes, json, os, time",
+                    "from pathlib import Path",
+                    f"ready=Path({json.dumps(str(ready))})",
+                    f"trigger=Path({json.dumps(str(trigger))})",
+                    f"nested={json.dumps(nested)}",
+                    "library=ctypes.CDLL('/usr/lib/libsandbox.dylib')",
+                    "error=ctypes.c_char_p()",
+                    (
+                        "result=library.sandbox_init("
+                        "nested.encode(), 0, ctypes.byref(error))"
+                    ),
+                    (
+                        "ready.write_text(json.dumps({"
+                        "'pid': os.getpid(), 'result': result, "
+                        "'error': error.value.decode() if error.value else ''"
+                        "}), encoding='utf-8')"
+                    ),
+                    "while not trigger.exists():",
+                    "    time.sleep(0.01)",
+                ]
+            )
+            process = subprocess.Popen(
+                [
+                    "/usr/bin/sandbox-exec",
+                    "-p",
+                    profile,
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-c",
+                    script,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.is_file() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.is_file())
+                nested_result = json.loads(ready.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    nested_result["result"],
+                    -1,
+                )
+                self.assertEqual(nested_result["error"], "Operation not permitted")
+                self.assertTrue(
+                    verifier._process_has_sandbox_lifecycle_token(
+                        nested_result["pid"],
+                        lifecycle_token,
+                    )
+                )
+            finally:
+                trigger.write_text("continue", encoding="utf-8")
+                process.wait(timeout=5)
+
+    def test_sandboxed_trusted_command_rejects_a_detached_descendant(self) -> None:
+        identity = verifier.ProcessIdentity(
+            pid=1234,
+            start_seconds=100,
+            start_microseconds=200,
+        )
+        completed = subprocess.CompletedProcess(
+            args=["sandbox-exec"],
+            returncode=0,
+            stdout=b"ok",
+            stderr=b"",
+        )
+        with (
+            mock.patch.object(verifier, "_run_trusted", return_value=completed),
+            mock.patch.object(
+                verifier,
+                "_terminate_sandbox_lifecycle_processes",
+                return_value=(identity,),
+            ),
+            self.assertRaisesRegex(
+                verifier.VerificationError,
+                "left sandbox descendants running",
+            ),
+        ):
+            verifier._run_sandboxed_trusted(
+                ["sandbox-exec"],
+                lifecycle_token=(
+                    "com.sanhuo.q7.0123456789abcdef0123456789abcdef"
+                ),
+                cwd=Path("/tmp"),
+                environment={},
+            )
 
     def test_persistent_snapshot_excludes_temporary_build_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import fnmatch
 import hashlib
 import json
@@ -11,11 +12,13 @@ import os
 import posixpath
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Mapping, Set
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -40,6 +43,8 @@ MAX_LINE_NUMBER: Final = 10_000_000
 MAX_TRACKED_FILES: Final = 100_000
 MAX_ACTION_OUTPUT_FILES: Final = 9
 MAX_TRUSTED_FAILURE_EXCERPT_BYTES: Final = 2048
+PROC_PIDTBSDINFO: Final = 3
+SANDBOX_FILTER_GLOBAL_NAME: Final = 2
 COMMIT_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 INSTANCE_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$")
@@ -167,6 +172,40 @@ class ReportSnapshot:
     role: str
     payload: bytes
     sha256: str
+
+
+@dataclass(frozen=True, order=True)
+class ProcessIdentity:
+    pid: int
+    start_seconds: int
+    start_microseconds: int
+
+
+class _ProcBSDInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
 
 
 def _require(condition: bool, message: str) -> None:
@@ -709,6 +748,7 @@ def sandbox_command(
     homebrew_root: Path,
     host_cxx: Path,
     tool_roots: tuple[Path, Path, Path, Path],
+    lifecycle_token: str,
     driver_mode: str,
     candidate: str | None = None,
     action: str | None = None,
@@ -721,6 +761,11 @@ def sandbox_command(
     )
     profile = (trusted_root / "sanhuo-q7.sb").resolve()
     driver = (trusted_root / "isolated_driver.py").resolve()
+    _require(
+        re.fullmatch(r"com\.sanhuo\.q7\.[a-f0-9]{32}", lifecycle_token)
+        is not None,
+        "sandbox lifecycle token is invalid",
+    )
     _require(driver_mode in {"action", "evidence"}, "driver mode is invalid")
     if driver_mode == "action":
         _require(
@@ -796,6 +841,8 @@ def sandbox_command(
         f"RUNTIME_HOME={runtime_home.resolve()}",
         "-D",
         f"OUTPUT_ROOT={output_root.resolve()}",
+        "-D",
+        f"LIFECYCLE_TOKEN={lifecycle_token}",
         "-D",
         f"ACTION_ARTIFACT_ROOT={action_artifact_root.resolve()}",
         "-D",
@@ -1773,6 +1820,193 @@ def _run_trusted(
     return result
 
 
+def _libproc() -> ctypes.CDLL:
+    _require(sys.platform == "darwin", "process lifecycle checks require macOS")
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    except OSError as exc:
+        raise VerificationError("macOS process inspection is unavailable") from exc
+    library.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    library.proc_listallpids.restype = ctypes.c_int
+    library.proc_pidinfo.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint64,
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
+    library.proc_pidinfo.restype = ctypes.c_int
+    return library
+
+
+def _libsandbox() -> ctypes.CDLL:
+    _require(sys.platform == "darwin", "sandbox lifecycle checks require macOS")
+    try:
+        library = ctypes.CDLL("/usr/lib/libsandbox.dylib", use_errno=True)
+    except OSError as exc:
+        raise VerificationError("macOS sandbox inspection is unavailable") from exc
+    library.sandbox_check.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    library.sandbox_check.restype = ctypes.c_int
+    return library
+
+
+def _process_identity(
+    pid: int,
+    *,
+    library: ctypes.CDLL | None = None,
+) -> ProcessIdentity | None:
+    """Return a PID-reuse-safe identity for a live macOS process."""
+
+    if pid <= 0:
+        return None
+    library = _libproc() if library is None else library
+    information = _ProcBSDInfo()
+    size = ctypes.sizeof(information)
+    received = library.proc_pidinfo(
+        pid,
+        PROC_PIDTBSDINFO,
+        0,
+        ctypes.byref(information),
+        size,
+    )
+    if received == 0:
+        return None
+    _require(received == size, "macOS returned incomplete process identity data")
+    return ProcessIdentity(
+        pid=int(information.pbi_pid),
+        start_seconds=int(information.pbi_start_tvsec),
+        start_microseconds=int(information.pbi_start_tvusec),
+    )
+
+
+def _all_process_identities() -> tuple[ProcessIdentity, ...]:
+    """Take a race-tolerant snapshot of all process identities."""
+
+    library = _libproc()
+    estimated = library.proc_listallpids(None, 0)
+    _require(estimated > 0, "macOS process enumeration failed")
+    capacity = estimated + 256
+    for _ in range(3):
+        buffer = (ctypes.c_int * capacity)()
+        count = library.proc_listallpids(buffer, ctypes.sizeof(buffer))
+        _require(count >= 0, "macOS process enumeration failed")
+        if count < capacity:
+            identities = {
+                identity
+                for pid in buffer[:count]
+                if (identity := _process_identity(int(pid), library=library))
+                is not None
+            }
+            return tuple(sorted(identities))
+        capacity *= 2
+    raise VerificationError("macOS process table changed too quickly to inspect")
+
+
+def _process_has_sandbox_lifecycle_token(
+    pid: int,
+    token: str,
+    *,
+    library: ctypes.CDLL | None = None,
+) -> bool:
+    """Identify a process carrying this action's immutable Seatbelt marker."""
+
+    _require(
+        re.fullmatch(r"com\.sanhuo\.q7\.[a-f0-9]{32}", token) is not None,
+        "sandbox lifecycle token is invalid",
+    )
+    library = _libsandbox() if library is None else library
+    check = library.sandbox_check
+    if check(pid, None, 0) != 1:
+        return False
+    return (
+        check(
+            pid,
+            b"mach-lookup",
+            SANDBOX_FILTER_GLOBAL_NAME,
+            ctypes.c_char_p(token.encode("ascii")),
+        )
+        == 0
+    )
+
+
+def _sandbox_lifecycle_processes(token: str) -> tuple[ProcessIdentity, ...]:
+    matches: list[ProcessIdentity] = []
+    library = _libsandbox()
+    for identity in _all_process_identities():
+        if (
+            _process_has_sandbox_lifecycle_token(
+                identity.pid,
+                token,
+                library=library,
+            )
+            and _process_identity(identity.pid) == identity
+        ):
+            matches.append(identity)
+    return tuple(matches)
+
+
+def _terminate_sandbox_lifecycle_processes(
+    token: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> tuple[ProcessIdentity, ...]:
+    """Kill and drain every descendant carrying one action's sandbox marker."""
+
+    deadline = time.monotonic() + timeout_seconds
+    terminated: set[ProcessIdentity] = set()
+    while True:
+        matches = _sandbox_lifecycle_processes(token)
+        if not matches:
+            return tuple(sorted(terminated))
+        for identity in matches:
+            if _process_identity(identity.pid) != identity:
+                continue
+            try:
+                os.kill(identity.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+            except PermissionError as exc:
+                raise VerificationError(
+                    "sandbox descendant could not be terminated"
+                ) from exc
+            terminated.add(identity)
+        if time.monotonic() >= deadline:
+            raise VerificationError("sandbox descendants could not be drained")
+        time.sleep(0.01)
+
+
+def _run_sandboxed_trusted(
+    command: list[str],
+    *,
+    lifecycle_token: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout: int = 300,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one marked sandbox and reject any descendant surviving its exit."""
+
+    try:
+        result = _run_trusted(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout=timeout,
+        )
+    except Exception:
+        _terminate_sandbox_lifecycle_processes(lifecycle_token)
+        raise
+    terminated = _terminate_sandbox_lifecycle_processes(lifecycle_token)
+    _require(
+        not terminated,
+        "target command left sandbox descendants running",
+    )
+    return result
+
+
 def _git(
     arguments: list[str],
     *,
@@ -2254,6 +2488,7 @@ def run_isolated_matrix(
             mode=0o700,
             exist_ok=True,
         )
+        lifecycle_token = f"com.sanhuo.q7.{secrets.token_hex(16)}"
         command = sandbox_command(
             checkout=checkout,
             git_dir=git_dir,
@@ -2271,12 +2506,14 @@ def run_isolated_matrix(
                 inputs.idf_root,
                 inputs.espressif_root,
             ),
+            lifecycle_token=lifecycle_token,
             driver_mode="action",
             candidate=candidate,
             action=action,
         )
-        result = _run_trusted(
+        result = _run_sandboxed_trusted(
             command,
+            lifecycle_token=lifecycle_token,
             cwd=trusted_root,
             environment={
                 "HOME": str(stage_home),
@@ -2338,6 +2575,7 @@ def run_isolated_matrix(
     evidence_output.mkdir(mode=0o700)
     (evidence_output / "artifacts").mkdir(mode=0o700)
     (evidence_output / "binaries").mkdir(mode=0o700)
+    lifecycle_token = f"com.sanhuo.q7.{secrets.token_hex(16)}"
     command = sandbox_command(
         checkout=checkout,
         git_dir=git_dir,
@@ -2355,11 +2593,13 @@ def run_isolated_matrix(
             inputs.idf_root,
             inputs.espressif_root,
         ),
+        lifecycle_token=lifecycle_token,
         driver_mode="evidence",
         sealed_input=previous_snapshot,
     )
-    result = _run_trusted(
+    result = _run_sandboxed_trusted(
         command,
+        lifecycle_token=lifecycle_token,
         cwd=trusted_root,
         environment={
             "HOME": str(evidence_home),
@@ -2786,21 +3026,110 @@ def _validate_q3_properties(value: Any) -> dict[str, Any]:
         and value.get("transport_candidate_checks") == 30_000
         and value.get("deterministic") is True
         and value.get("hardware_used") is False
-        and value.get("maximum_t1_hold_error_raw") <= 2
-        and value.get("maximum_t2_proxy_error_raw") <= 2
-        and value.get("maximum_t2_segment_ms") <= 400
+        and value.get("maximum_t1_hold_error_raw") == 2
+        and value.get("maximum_t2_proxy_error_raw") == 2
+        and value.get("maximum_t2_segment_ms") == 400
         and value.get("raw_envelope") == {
             "pan": [360, 560],
             "tilt": [620, 754],
-        },
+        }
+        and value.get("trace_sha256")
+        == "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f",
         "Q3 property evidence is invalid",
     )
-    _validate_sha256(value["trace_sha256"], "Q3 property trace")
     _validate_self_hash(value, label="Q3 property")
     return {
         "cases": 10_000,
         "transport_candidate_checks": 30_000,
         "deterministic": True,
+    }
+
+
+def _expected_transport_q3_semantics(candidate: str) -> dict[str, Any]:
+    variants: dict[str, dict[str, Any]] = {
+        "MF-T0": {
+            "schedule_sha256": (
+                "9d149895eadeadf8ec7cfbe0daf49546bc295ee7e47b4c11b23f57bfaebc3e16"
+            ),
+            "pan_strategy": "every_changed_raw",
+            "pan_error_threshold_raw": None,
+            "pan_linear_error_raw": None,
+            "pan_max_segment_ms": None,
+            "pan_transactions": 871,
+            "total_transactions": 1_298,
+            "theoretical_uart_bytes": 24_662,
+            "max_pan_proxy_error_raw": 0,
+            "max_pan_segment_ms": 20,
+        },
+        "MF-T1": {
+            "schedule_sha256": (
+                "a5f5b9dff057cbc3182d0ad8f5ba7c6b9c48da2a4f34e5d81d2f5000408a5446"
+            ),
+            "pan_strategy": "adaptive_hold",
+            "pan_error_threshold_raw": 3,
+            "pan_linear_error_raw": None,
+            "pan_max_segment_ms": None,
+            "pan_transactions": 661,
+            "total_transactions": 1_088,
+            "theoretical_uart_bytes": 20_672,
+            "max_pan_proxy_error_raw": 2,
+            "max_pan_segment_ms": 20,
+        },
+        "MF-T2": {
+            "schedule_sha256": (
+                "8901cab39fc053ea1973da43613682a292c81397bead54c41878185b240f886e"
+            ),
+            "pan_strategy": "linear_time_segments",
+            "pan_error_threshold_raw": None,
+            "pan_linear_error_raw": 2,
+            "pan_max_segment_ms": 400,
+            "pan_transactions": 186,
+            "total_transactions": 613,
+            "theoretical_uart_bytes": 11_647,
+            "max_pan_proxy_error_raw": 2,
+            "max_pan_segment_ms": 400,
+        },
+    }
+    _require(candidate in variants, "Q3 transport candidate is invalid")
+    variant = variants[candidate]
+    return {
+        "schedule_sha256": variant["schedule_sha256"],
+        "source": {
+            "baseline_commit": "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
+            "replay_input_sha256": (
+                "7dad9594f0a97a7cba825d05f6e49905f40ded8d3182c471b088c9650b0bf259"
+            ),
+            "trace_sha256": (
+                "1fa69975f34bbe56173cd54b3d2ec3f2523c879389a6d67544b50b69a8e9c71f"
+            ),
+            "trajectory_table_sha256": (
+                "85637c041d099b1a647924e90d39fee363085982a8d3206382ca9b34b224c3d4"
+            ),
+        },
+        "parameters": {
+            "ack_budget_ms": 25,
+            "automatic_retry": False,
+            "pan_error_threshold_raw": variant["pan_error_threshold_raw"],
+            "pan_linear_error_raw": variant["pan_linear_error_raw"],
+            "pan_max_segment_ms": variant["pan_max_segment_ms"],
+            "pan_strategy": variant["pan_strategy"],
+            "runtime_override": False,
+            "speed": 0,
+            "tick_ms": 20,
+            "tilt_strategy": "every_changed_raw",
+        },
+        "metrics": {
+            "final_pan_raw": 459,
+            "final_tilt_raw": 678,
+            "mandatory_boundaries": 47,
+            "mandatory_boundaries_preserved": True,
+            "max_pan_proxy_error_raw": variant["max_pan_proxy_error_raw"],
+            "max_pan_segment_ms": variant["max_pan_segment_ms"],
+            "pan_transactions": variant["pan_transactions"],
+            "theoretical_uart_bytes": variant["theoretical_uart_bytes"],
+            "tilt_transactions": 427,
+            "total_transactions": variant["total_transactions"],
+        },
     }
 
 
@@ -2878,22 +3207,34 @@ def _validate_gate_semantics(
     if gate == "Q3":
         properties = _validate_q3_properties(evidence.get("randomized_properties"))
         if candidate == "MF-P2":
-            first = evidence.get("first")
-            last = evidence.get("last")
+            expected = {
+                "public_target_count": 58,
+                "public_targets_sha256": (
+                    "e188788005e5f262de294788e61a17c56a492239f1445779d87c40d45b111117"
+                ),
+                "system_duration_ms": 60_000,
+                "first": {
+                    "at_ms": 0,
+                    "yaw_tenths": 0,
+                    "pitch_tenths": 0,
+                },
+                "last": {
+                    "at_ms": 58_140,
+                    "yaw_tenths": 0,
+                    "pitch_tenths": 0,
+                },
+                "yaw_tenths_range": [-350, 350],
+                "pitch_tenths_range": [-120, 140],
+                "header_sha256": (
+                    "6eb9f679f65b47e140c0f1cd69a08b04b42c5be78240257030289c3090f9e007"
+                ),
+            }
             _require(
-                type(evidence.get("public_target_count")) is int
-                and evidence["public_target_count"] > 0
-                and type(evidence.get("system_duration_ms")) is int
-                and evidence["system_duration_ms"] == 60_000
-                and type(first) is dict
-                and first == {"at_ms": 0, "yaw_tenths": 0, "pitch_tenths": 0}
-                and all(type(value) is int for value in first.values())
-                and type(last) is dict
-                and set(last) == {"at_ms", "yaw_tenths", "pitch_tenths"}
-                and all(type(value) is int for value in last.values())
-                and 57_000 <= last["at_ms"] < 60_000
-                and last["yaw_tenths"] == 0
-                and last["pitch_tenths"] == 0,
+                {
+                    key: evidence.get(key)
+                    for key in expected
+                }
+                == expected,
                 "MF-P2 Q3 public target semantics drift",
             )
         else:
@@ -2901,10 +3242,13 @@ def _validate_gate_semantics(
                 evidence.get("property_test"),
                 expected_tests=5,
             )
-            _validate_sha256(evidence.get("schedule_sha256"), "Q3 schedule")
+            expected = _expected_transport_q3_semantics(candidate)
             _require(
-                type(evidence.get("metrics")) is dict
-                and type(evidence.get("parameters")) is dict,
+                {
+                    key: evidence.get(key)
+                    for key in expected
+                }
+                == expected,
                 f"{candidate} Q3 schedule semantics drift",
             )
         return properties

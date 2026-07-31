@@ -32,6 +32,7 @@
 (allow signal)
 (allow sysctl-read)
 (allow ipc-posix-shm)
+(allow mach-lookup (global-name (param "LIFECYCLE_TOKEN")))
 (allow file-read-metadata)
 
 ; macOS's system Python resolves a small set of private virtual/runtime paths
