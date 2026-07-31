@@ -3266,7 +3266,7 @@ def _validate_gate_semantics(
         else:
             _validate_pytest_evidence(
                 evidence.get("property_test"),
-                expected_tests=5,
+                expected_tests=6,
             )
             expected = _expected_transport_q3_semantics(candidate)
             _require(

@@ -343,9 +343,9 @@ class TrustedVerifierTests(unittest.TestCase):
         }
         properties["report_sha256"] = verifier.sha256_json(properties)
         counts = {
-            "collected": 5,
-            "executed": 5,
-            "passed": 5,
+            "collected": 6,
+            "executed": 6,
+            "passed": 6,
             "failed": 0,
             "errors": 0,
             "skipped": 0,
@@ -396,11 +396,11 @@ class TrustedVerifierTests(unittest.TestCase):
             "property_test": {
                 "paths": ["locked-q3-suite.py"],
                 "returncode": 0,
-                "expected_tests": 5,
+                "expected_tests": 6,
                 "counts": counts,
                 "python_executable_sha256": "1" * 64,
                 "normalized_stdout_sha256": "2" * 64,
-                "summary": "5 passed",
+                "summary": "6 passed",
             },
         }
 
