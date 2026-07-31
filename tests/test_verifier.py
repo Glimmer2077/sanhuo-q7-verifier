@@ -1196,10 +1196,12 @@ class TrustedVerifierTests(unittest.TestCase):
                     verifier._process_has_sandbox_lifecycle_token(
                         detached_pid,
                         lifecycle_token,
+                        artifact,
                     )
                 )
                 terminated = verifier._terminate_sandbox_lifecycle_processes(
                     lifecycle_token,
+                    artifact,
                 )
                 self.assertIn(detached_pid, {identity.pid for identity in terminated})
 
@@ -1306,11 +1308,27 @@ class TrustedVerifierTests(unittest.TestCase):
                     verifier._process_has_sandbox_lifecycle_token(
                         nested_result["pid"],
                         lifecycle_token,
+                        ready,
                     )
                 )
             finally:
                 trigger.write_text("continue", encoding="utf-8")
                 process.wait(timeout=5)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file(),
+        "requires macOS sandbox process inspection",
+    )
+    def test_lifecycle_identity_excludes_unrelated_sandboxes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            probe = Path(temporary) / "never-created-probe"
+            self.assertEqual(
+                verifier._sandbox_lifecycle_processes(
+                    "com.sanhuo.q7.abcdef0123456789abcdef0123456789",
+                    probe,
+                ),
+                (),
+            )
 
     def test_sandboxed_trusted_command_rejects_a_detached_descendant(self) -> None:
         identity = verifier.ProcessIdentity(
@@ -1341,6 +1359,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 lifecycle_token=(
                     "com.sanhuo.q7.0123456789abcdef0123456789abcdef"
                 ),
+                lifecycle_probe=Path("/tmp/runtime/lifecycle-probe"),
                 cwd=Path("/tmp"),
                 environment={},
             )

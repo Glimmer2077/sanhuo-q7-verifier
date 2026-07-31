@@ -44,6 +44,7 @@ MAX_TRACKED_FILES: Final = 100_000
 MAX_ACTION_OUTPUT_FILES: Final = 9
 MAX_TRUSTED_FAILURE_EXCERPT_BYTES: Final = 2048
 PROC_PIDTBSDINFO: Final = 3
+SANDBOX_FILTER_PATH: Final = 1
 SANDBOX_FILTER_GLOBAL_NAME: Final = 2
 COMMIT_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -1909,10 +1910,11 @@ def _all_process_identities() -> tuple[ProcessIdentity, ...]:
 def _process_has_sandbox_lifecycle_token(
     pid: int,
     token: str,
+    writable_probe: Path,
     *,
     library: ctypes.CDLL | None = None,
 ) -> bool:
-    """Identify a process carrying this action's immutable Seatbelt marker."""
+    """Match this action's marker and exact disposable write namespace."""
 
     _require(
         re.fullmatch(r"com\.sanhuo\.q7\.[a-f0-9]{32}", token) is not None,
@@ -1922,18 +1924,31 @@ def _process_has_sandbox_lifecycle_token(
     check = library.sandbox_check
     if check(pid, None, 0) != 1:
         return False
-    return (
+    if (
         check(
             pid,
             b"mach-lookup",
             SANDBOX_FILTER_GLOBAL_NAME,
             ctypes.c_char_p(token.encode("ascii")),
         )
+        != 0
+    ):
+        return False
+    return (
+        check(
+            pid,
+            b"file-write-data",
+            SANDBOX_FILTER_PATH,
+            ctypes.c_char_p(os.fsencode(writable_probe)),
+        )
         == 0
     )
 
 
-def _sandbox_lifecycle_processes(token: str) -> tuple[ProcessIdentity, ...]:
+def _sandbox_lifecycle_processes(
+    token: str,
+    writable_probe: Path,
+) -> tuple[ProcessIdentity, ...]:
     matches: list[ProcessIdentity] = []
     library = _libsandbox()
     for identity in _all_process_identities():
@@ -1941,6 +1956,7 @@ def _sandbox_lifecycle_processes(token: str) -> tuple[ProcessIdentity, ...]:
             _process_has_sandbox_lifecycle_token(
                 identity.pid,
                 token,
+                writable_probe,
                 library=library,
             )
             and _process_identity(identity.pid) == identity
@@ -1951,6 +1967,7 @@ def _sandbox_lifecycle_processes(token: str) -> tuple[ProcessIdentity, ...]:
 
 def _terminate_sandbox_lifecycle_processes(
     token: str,
+    writable_probe: Path,
     *,
     timeout_seconds: float = 5.0,
 ) -> tuple[ProcessIdentity, ...]:
@@ -1959,7 +1976,7 @@ def _terminate_sandbox_lifecycle_processes(
     deadline = time.monotonic() + timeout_seconds
     terminated: set[ProcessIdentity] = set()
     while True:
-        matches = _sandbox_lifecycle_processes(token)
+        matches = _sandbox_lifecycle_processes(token, writable_probe)
         if not matches:
             return tuple(sorted(terminated))
         for identity in matches:
@@ -1983,6 +2000,7 @@ def _run_sandboxed_trusted(
     command: list[str],
     *,
     lifecycle_token: str,
+    lifecycle_probe: Path,
     cwd: Path,
     environment: Mapping[str, str],
     timeout: int = 300,
@@ -1997,9 +2015,15 @@ def _run_sandboxed_trusted(
             timeout=timeout,
         )
     except Exception:
-        _terminate_sandbox_lifecycle_processes(lifecycle_token)
+        _terminate_sandbox_lifecycle_processes(
+            lifecycle_token,
+            lifecycle_probe,
+        )
         raise
-    terminated = _terminate_sandbox_lifecycle_processes(lifecycle_token)
+    terminated = _terminate_sandbox_lifecycle_processes(
+        lifecycle_token,
+        lifecycle_probe,
+    )
     _require(
         not terminated,
         "target command left sandbox descendants running",
@@ -2514,6 +2538,7 @@ def run_isolated_matrix(
         result = _run_sandboxed_trusted(
             command,
             lifecycle_token=lifecycle_token,
+            lifecycle_probe=stage_home / ".sanhuo-q7-lifecycle-probe",
             cwd=trusted_root,
             environment={
                 "HOME": str(stage_home),
@@ -2600,6 +2625,7 @@ def run_isolated_matrix(
     result = _run_sandboxed_trusted(
         command,
         lifecycle_token=lifecycle_token,
+        lifecycle_probe=evidence_home / ".sanhuo-q7-lifecycle-probe",
         cwd=trusted_root,
         environment={
             "HOME": str(evidence_home),
