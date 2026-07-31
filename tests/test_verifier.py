@@ -561,8 +561,10 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertIn('(subpath (param "ACTION_BINARY_ROOT"))', profile)
         self.assertIn('(subpath (param "XCODE_FRAMEWORKS"))', profile)
         self.assertIn('(subpath (param "XCODE_SHARED_FRAMEWORKS"))', profile)
+        self.assertIn('(subpath (param "EXEC_HOMEBREW_OPENSSL"))', profile)
         self.assertIn('(literal "/private/etc/paths")', profile)
         self.assertIn('(subpath "/private/etc/paths.d")', profile)
+        self.assertNotIn('(subpath "/opt/homebrew")', profile)
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/dev/urandom")', profile)
 
@@ -649,6 +651,16 @@ class TrustedVerifierTests(unittest.TestCase):
                 "-D",
                 "XCODE_FRAMEWORKS=/Applications/Xcode.app/Contents/Frameworks",
                 "-D",
+                (
+                    "EXEC_HOMEBREW_OPENSSL="
+                    "/opt/homebrew/Cellar/openssl@3/3.6.3/lib"
+                ),
+                "-D",
+                (
+                    "EXEC_HOMEBREW_PYTHON="
+                    "/opt/homebrew/Cellar/python@3.11/3.11.14_3"
+                ),
+                "-D",
                 f"PYTHON_ROOT={python_root}",
                 "-D",
                 f"PLATFORMIO_ROOT={paths['cache']}",
@@ -677,7 +689,6 @@ class TrustedVerifierTests(unittest.TestCase):
                         "EXEC_IDF_ROOT",
                         "EXEC_IDF_PYTHON",
                         "EXEC_IDF_XTENSA",
-                        "EXEC_HOMEBREW_PYTHON",
                         "EXEC_HOMEBREW_CMAKE",
                         "EXEC_HOMEBREW_NINJA",
                     )
@@ -728,6 +739,28 @@ class TrustedVerifierTests(unittest.TestCase):
                     "        'git cannot use locked Xcode: '\n"
                     "        + git.stderr.decode('utf-8', errors='replace')\n"
                     "    )\n"
+                    "ssl_check=subprocess.run(\n"
+                    "    [\n"
+                    "        '/opt/homebrew/opt/python@3.11/bin/python3.11',\n"
+                    "        '-c',\n"
+                    "        \"import ssl; assert ssl.OPENSSL_VERSION.startswith('OpenSSL 3.6.3')\",\n"
+                    "    ],\n"
+                    "    check=False, stdout=subprocess.PIPE,\n"
+                    "    stderr=subprocess.PIPE,\n"
+                    ")\n"
+                    "if ssl_check.returncode != 0:\n"
+                    "    raise RuntimeError(\n"
+                    "        'locked Homebrew OpenSSL runtime is unavailable: '\n"
+                    "        + ssl_check.stderr.decode('utf-8', errors='replace')\n"
+                    "    )\n"
+                    "try:\n"
+                    "    Path(\n"
+                    "        '/opt/homebrew/Cellar/openssl@3/3.6.3/include/openssl/ssl.h'\n"
+                    "    ).read_bytes()\n"
+                    "except PermissionError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise RuntimeError('adjacent OpenSSL headers became readable')\n"
                     f"platform_lock=Path({json.dumps(str(platform_lock))})\n"
                     "platform_lock.write_text('ephemeral', encoding='utf-8')\n"
                     f"package_lock=Path({json.dumps(str(package_lock))})\n"

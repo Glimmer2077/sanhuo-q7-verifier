@@ -69,6 +69,7 @@
   (subpath (param "TEST_USER_SITE_ROOT"))
   (subpath (param "TEST_GLOBAL_SITE_ROOT"))
   (subpath (param "EXEC_HOMEBREW_PYTHON"))
+  (subpath (param "EXEC_HOMEBREW_OPENSSL"))
   (subpath (param "EXEC_HOMEBREW_CMAKE"))
   (subpath (param "EXEC_HOMEBREW_NINJA"))
   (subpath (param "EXEC_IDF_PYTHON"))

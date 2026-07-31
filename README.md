@@ -61,6 +61,9 @@
 - `verify` 在运行被审代码前先读取、限制、解析并哈希两份报告。
 - 外层验证器只接受 Apple Xcode 自带的隔离 Python；并在任何被审 Python、
   构建器或 ELF 工具运行前，独立核对固定工具链清单和全部目录闭包。
+- Homebrew Python 的 OpenSSL 运行依赖只开放已验签的
+  `Cellar/openssl@3/3.6.3/lib` 只读闭包；相邻 headers、其他版本和整个
+  Homebrew 根仍关闭。
 - 被审代码只会在 macOS `sandbox-exec` 中运行；没有网络、设备树、宿主
   凭证或报告目录访问权。macOS 系统解析所需的只读命名空间保留，但
   `/Users`、`/Volumes`、`/Network`、`/Applications`、`/Library`、

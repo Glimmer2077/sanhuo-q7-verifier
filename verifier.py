@@ -27,7 +27,7 @@ VERIFIER_REPOSITORY: Final = "Glimmer2077/sanhuo-q7-verifier"
 CANDIDATES: Final = ("MF-P2", "MF-T0", "MF-T1", "MF-T2")
 TARGET_REQUIRED_COMMITS: Final = ("8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",)
 TRUSTED_TOOLCHAIN_LOCK_SHA256: Final = (
-    "922619a2f952e671e9e1437ae169c5fe40e3460d1d4ffdee05bd144bac6e03a3"
+    "80dc4efc239383e1245699a91aedc566fd5237b67b087fa0f6149a89d930427f"
 )
 TOOLCHAIN_LOCK_RELATIVE_PATH: Final = (
     "firmware/sanhuo-stackchan-idf/tools/motion_firmware_matrix/"
@@ -774,6 +774,9 @@ def sandbox_command(
             espressif_root / "tools/xtensa-esp-elf/esp-14.2.0_20260121"
         ),
         "EXEC_HOMEBREW_PYTHON": (homebrew_root / "Cellar/python@3.11/3.11.14_3"),
+        "EXEC_HOMEBREW_OPENSSL": (
+            homebrew_root / "Cellar/openssl@3/3.6.3/lib"
+        ),
         "EXEC_HOMEBREW_CMAKE": homebrew_root / "Cellar/cmake/4.3.4",
         "EXEC_HOMEBREW_NINJA": homebrew_root / "Cellar/ninja/1.13.2",
     }
@@ -2820,7 +2823,7 @@ def _validate_gate_semantics(
         return {
             "base_sources": 5,
             "phase2_sources": 2,
-            "toolchain_closures": 14,
+            "toolchain_closures": 15,
             "network": False,
         }
     if gate == "Q1":
