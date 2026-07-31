@@ -2667,11 +2667,18 @@ def run_isolated_matrix(
         and evidence_summary.get("hardware_devices") is False,
         "trusted ELF evidence summary is invalid",
     )
+    q5_executor_evidence = evidence_summary.get("q5_executor_evidence")
+    _require(
+        type(q5_executor_evidence) is dict
+        and set(q5_executor_evidence) == set(CANDIDATES),
+        "trusted Q5 executor evidence candidates drift",
+    )
     return {
         "schema": "sanhuo.trusted_q7_isolated_run.v2",
         "status": "passed",
         "commands": summaries,
         "elf_evidence": evidence_summary.get("elf_evidence"),
+        "q5_executor_evidence": q5_executor_evidence,
         "sealed_snapshot": str(previous_snapshot),
         "network": False,
         "hardware_devices": False,
@@ -3285,6 +3292,7 @@ def _validate_gate_semantics(
     trusted_elf: Mapping[str, Any],
     trusted_q0: Mapping[str, Any],
     tracked_manifest: Mapping[str, Any],
+    trusted_q5_executor: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Independently validate the Phase 2C H1-A safety evidence."""
 
@@ -3312,6 +3320,7 @@ def _validate_gate_semantics(
             "firmware/sanhuo-stackchan-idf/main/motion_matrix_candidate_app.cpp",
             "firmware/sanhuo-stackchan-idf/main/motion_matrix_generated_schedule.h",
             "firmware/sanhuo-stackchan-idf/main/phase2_executor_core.h",
+            "firmware/sanhuo-stackchan-idf/main/phase2c_screen_executor.h",
             "firmware/sanhuo-stackchan-idf/main/phase2c_screen_protocol.h",
         ]
         _require(
@@ -3320,6 +3329,7 @@ def _validate_gate_semantics(
                 "build_report_sha256",
                 "source_diff_audit",
                 "shared_executor_core_sha256",
+                "shared_screen_adapter_sha256",
                 "firmware_capabilities",
             }
             and evidence["build_report_sha256"] == build["report_sha256"]
@@ -3339,12 +3349,16 @@ def _validate_gate_semantics(
             == source_diff["changed_file_sha256"][
                 "firmware/sanhuo-stackchan-idf/main/phase2_executor_core.h"
             ]
+            and evidence["shared_screen_adapter_sha256"]
+            == source_diff["changed_file_sha256"][
+                "firmware/sanhuo-stackchan-idf/main/phase2c_screen_executor.h"
+            ]
             and evidence["firmware_capabilities"]
             == trusted_elf["firmware_capabilities"],
             f"{candidate} Q1 fixed-screen scope drift",
         )
         return {
-            "changed_files": 8,
+            "changed_files": 9,
             "protected_source_groups": 5,
             "capabilities_independently_derived": True,
         }
@@ -3467,6 +3481,49 @@ def _validate_gate_semantics(
             "MF-T1-H1A": 364,
             "MF-T2-H1A": 200,
         }[candidate]
+        host_executor = evidence.get("host_executor")
+        source_hashes = reproduction["source_diff_audit"][
+            "changed_file_sha256"
+        ]
+        expected_host_fields = {
+            "harness_source_sha256",
+            "shared_executor_core_sha256",
+            "screen_adapter_sha256",
+            "generated_schedule_sha256",
+            "compiler_sha256",
+            "executable_sha256",
+            "sanitizers",
+            "healthy_runs",
+            "fault_runs",
+            "feedback_collision_safe_stops",
+            "feedback_collision_min_sent",
+            "feedback_collision_max_sent",
+            "post_failure_performance_writes",
+            "safe_center_attempts_maximum",
+            "maximum_lateness_ms",
+            "golden_trace_sha256",
+            "stdout_sha256",
+            "shared_core_executed",
+            "screen_adapter_executed",
+        }
+        expected_trusted_fields = {
+            "candidate_id",
+            "events_per_run",
+            "healthy_runs",
+            "fault_runs",
+            "feedback_collision_safe_stops",
+            "feedback_collision_min_sent",
+            "feedback_collision_max_sent",
+            "post_failure_performance_writes",
+            "safe_center_attempts_maximum",
+            "shared_executor_core_sha256",
+            "screen_adapter_sha256",
+            "trusted_harness_source_sha256",
+            "target_harness_source_sha256",
+            "compiler_sha256",
+            "executable_sha256",
+            "stdout_sha256",
+        }
         _require(
             evidence.get("schema") == "sanhuo.motion_phase2c_system_matrix.v1"
             and evidence.get("candidate_id") == candidate
@@ -3493,6 +3550,87 @@ def _validate_gate_semantics(
             and evidence.get("hardware_used") is False,
             f"{candidate} Q5 system semantics drift",
         )
+        _require(
+            type(host_executor) is dict
+            and set(host_executor) == expected_host_fields
+            and host_executor["sanitizers"] == ["address", "undefined"]
+            and host_executor["healthy_runs"] == 200
+            and host_executor["fault_runs"] == 200
+            and host_executor["feedback_collision_safe_stops"] == 200
+            and host_executor["feedback_collision_min_sent"] == 1
+            and host_executor["feedback_collision_max_sent"]
+            == expected_collision_max
+            and host_executor["post_failure_performance_writes"] == 0
+            and host_executor["safe_center_attempts_maximum"] == 1
+            and host_executor["maximum_lateness_ms"] == 60
+            and host_executor["shared_core_executed"] is True
+            and host_executor["screen_adapter_executed"] is True
+            and host_executor["stdout_sha256"]
+            == evidence["all_seed_traces_sha256"]
+            and host_executor["golden_trace_sha256"]
+            == evidence["golden_trace_sha256"]
+            and host_executor["shared_executor_core_sha256"]
+            == source_hashes[
+                "firmware/sanhuo-stackchan-idf/main/phase2_executor_core.h"
+            ]
+            and host_executor["screen_adapter_sha256"]
+            == source_hashes[
+                "firmware/sanhuo-stackchan-idf/main/phase2c_screen_executor.h"
+            ]
+            and host_executor["generated_schedule_sha256"]
+            == source_hashes[
+                "firmware/sanhuo-stackchan-idf/main/motion_matrix_generated_schedule.h"
+            ],
+            f"{candidate} Q5 target host executor evidence drift",
+        )
+        _require(
+            type(trusted_q5_executor) is dict
+            and set(trusted_q5_executor) == expected_trusted_fields
+            and trusted_q5_executor["candidate_id"] == candidate
+            and trusted_q5_executor["events_per_run"]
+            == tracked_manifest["screen_schedule"]["commands"]
+            and trusted_q5_executor["healthy_runs"] == 200
+            and trusted_q5_executor["fault_runs"] == 200
+            and trusted_q5_executor["feedback_collision_safe_stops"] == 200
+            and trusted_q5_executor["feedback_collision_min_sent"] == 1
+            and trusted_q5_executor["feedback_collision_max_sent"]
+            == expected_collision_max
+            and trusted_q5_executor["post_failure_performance_writes"] == 0
+            and trusted_q5_executor["safe_center_attempts_maximum"] == 1
+            and trusted_q5_executor["shared_executor_core_sha256"]
+            == host_executor["shared_executor_core_sha256"]
+            and trusted_q5_executor["screen_adapter_sha256"]
+            == host_executor["screen_adapter_sha256"]
+            and trusted_q5_executor["target_harness_source_sha256"]
+            == host_executor["harness_source_sha256"]
+            and trusted_q5_executor["compiler_sha256"]
+            == host_executor["compiler_sha256"],
+            f"{candidate} Q5 trusted executor re-run drift",
+        )
+        for field in (
+            "harness_source_sha256",
+            "shared_executor_core_sha256",
+            "screen_adapter_sha256",
+            "generated_schedule_sha256",
+            "compiler_sha256",
+            "executable_sha256",
+            "golden_trace_sha256",
+            "stdout_sha256",
+        ):
+            _validate_sha256(host_executor[field], f"Q5 host {field}")
+        for field in (
+            "shared_executor_core_sha256",
+            "screen_adapter_sha256",
+            "trusted_harness_source_sha256",
+            "target_harness_source_sha256",
+            "compiler_sha256",
+            "executable_sha256",
+            "stdout_sha256",
+        ):
+            _validate_sha256(
+                trusted_q5_executor[field],
+                f"Q5 trusted {field}",
+            )
         _validate_self_hash(dict(evidence), label=f"{candidate} Q5 system")
         return {
             "seeds": 100,
@@ -3501,6 +3639,8 @@ def _validate_gate_semantics(
             "feedback_collision_safe_stops": 100,
             "post_failure_performance_writes": 0,
             "safe_center_attempts_maximum": 1,
+            "shared_executor_host_runs": 400,
+            "trusted_executor_reexecution": True,
         }
     if gate == "Q6":
         expected = {
@@ -3560,6 +3700,7 @@ def _validate_precheck_artifacts(
     trusted_elf: Mapping[str, Any],
     trusted_q0: Mapping[str, Any],
     tracked_manifest: Mapping[str, Any],
+    trusted_q5_executor: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Validate every Q0-Q6 report and the fail-closed precheck summary directly."""
 
@@ -3601,6 +3742,7 @@ def _validate_precheck_artifacts(
             trusted_elf=trusted_elf,
             trusted_q0=trusted_q0,
             tracked_manifest=tracked_manifest,
+            trusted_q5_executor=trusted_q5_executor,
         )
         manifest_gate = manifest_gates.get(gate)
         _require(
@@ -3670,6 +3812,12 @@ def collect_matrix_evidence(
     _require(
         type(elf_evidence) is dict and set(elf_evidence) == set(CANDIDATES),
         "trusted ELF evidence candidates drift",
+    )
+    trusted_q5_evidence = isolated_summary.get("q5_executor_evidence")
+    _require(
+        type(trusted_q5_evidence) is dict
+        and set(trusted_q5_evidence) == set(CANDIDATES),
+        "trusted Q5 executor evidence candidates drift",
     )
     trusted_source_toolchain = {
         "base": _trusted_source_report(
@@ -3843,6 +3991,7 @@ def collect_matrix_evidence(
                 "parent_evidence": tracked_manifest["parent_evidence"],
             },
             tracked_manifest=tracked_manifest,
+            trusted_q5_executor=trusted_q5_evidence[candidate],
         )
         audit_file_sha256, _ = _sha256_regular_file(
             audit_path,

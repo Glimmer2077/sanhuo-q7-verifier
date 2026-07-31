@@ -32,6 +32,14 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertTrue(all("sh" not in command[:1] for command in commands))
 
+    def test_trusted_q5_harness_executes_target_core_and_adapter(self) -> None:
+        source = isolated_driver.TRUSTED_Q5_HARNESS_SOURCE
+
+        self.assertIn('#include "phase2c_screen_executor.h"', source)
+        self.assertIn("screen::executeScreen(", source)
+        self.assertIn("post_failure_performance_writes", source)
+        self.assertNotIn("phase2c_screen_executor.cpp", source)
+
     def test_trusted_capability_derivation_rejects_missing_motion(self) -> None:
         screen_symbols = {
             "uart_write_bytes",

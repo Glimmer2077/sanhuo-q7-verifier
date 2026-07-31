@@ -184,6 +184,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "trusted_elf": {},
             "trusted_q0": {},
             "tracked_manifest": {},
+            "trusted_q5_executor": {},
         }
 
         with mock.patch.object(
@@ -586,6 +587,27 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertEqual(t2_summary["commands"], 206)
 
     def test_phase2c_q5_binds_t2_collision_window(self) -> None:
+        host_executor = {
+            "harness_source_sha256": "3" * 64,
+            "shared_executor_core_sha256": "4" * 64,
+            "screen_adapter_sha256": "5" * 64,
+            "generated_schedule_sha256": "6" * 64,
+            "compiler_sha256": "7" * 64,
+            "executable_sha256": "8" * 64,
+            "sanitizers": ["address", "undefined"],
+            "healthy_runs": 200,
+            "fault_runs": 200,
+            "feedback_collision_safe_stops": 200,
+            "feedback_collision_min_sent": 1,
+            "feedback_collision_max_sent": 200,
+            "post_failure_performance_writes": 0,
+            "safe_center_attempts_maximum": 1,
+            "maximum_lateness_ms": 60,
+            "golden_trace_sha256": "9" * 64,
+            "stdout_sha256": "a" * 64,
+            "shared_core_executed": True,
+            "screen_adapter_executed": True,
+        }
         evidence = {
             "schema": "sanhuo.motion_phase2c_system_matrix.v1",
             "candidate_id": "MF-T2-H1A",
@@ -608,18 +630,52 @@ class TrustedVerifierTests(unittest.TestCase):
             "automatic_retry": False,
             "automatic_reset": False,
             "hardware_used": False,
-            "all_seed_traces_sha256": "1" * 64,
-            "golden_trace_sha256": "2" * 64,
+            "host_executor": host_executor,
+            "all_seed_traces_sha256": "a" * 64,
+            "golden_trace_sha256": "9" * 64,
         }
         evidence["report_sha256"] = verifier.sha256_json(evidence)
+        build = {
+            "reproducibility": {
+                "source_diff_audit": {
+                    "changed_file_sha256": {
+                        "firmware/sanhuo-stackchan-idf/main/phase2_executor_core.h": "4"
+                        * 64,
+                        "firmware/sanhuo-stackchan-idf/main/motion_matrix_generated_schedule.h": "6"
+                        * 64,
+                        "firmware/sanhuo-stackchan-idf/main/phase2c_screen_executor.h": "5"
+                        * 64,
+                    }
+                }
+            }
+        }
+        trusted_q5 = {
+            "candidate_id": "MF-T2-H1A",
+            "events_per_run": 206,
+            "healthy_runs": 200,
+            "fault_runs": 200,
+            "feedback_collision_safe_stops": 200,
+            "feedback_collision_min_sent": 1,
+            "feedback_collision_max_sent": 200,
+            "post_failure_performance_writes": 0,
+            "safe_center_attempts_maximum": 1,
+            "shared_executor_core_sha256": "4" * 64,
+            "screen_adapter_sha256": "5" * 64,
+            "trusted_harness_source_sha256": "b" * 64,
+            "target_harness_source_sha256": "3" * 64,
+            "compiler_sha256": "7" * 64,
+            "executable_sha256": "c" * 64,
+            "stdout_sha256": "d" * 64,
+        }
         summary = verifier._validate_gate_semantics(
             candidate="MF-T2-H1A",
             gate="Q5",
             evidence=evidence,
-            build={"reproducibility": {}},
+            build=build,
             trusted_elf={},
             trusted_q0={},
             tracked_manifest={"screen_schedule": {"commands": 206}},
+            trusted_q5_executor=trusted_q5,
         )
         self.assertEqual(summary["feedback_collision_safe_stops"], 100)
 
@@ -636,10 +692,33 @@ class TrustedVerifierTests(unittest.TestCase):
                 candidate="MF-T2-H1A",
                 gate="Q5",
                 evidence=tampered,
-                build={"reproducibility": {}},
+                build=build,
                 trusted_elf={},
                 trusted_q0={},
                 tracked_manifest={"screen_schedule": {"commands": 206}},
+                trusted_q5_executor=trusted_q5,
+            )
+
+        wrong_schedule = copy.deepcopy(evidence)
+        wrong_schedule["host_executor"]["generated_schedule_sha256"] = "e" * 64
+        wrong_schedule_payload = dict(wrong_schedule)
+        wrong_schedule_payload.pop("report_sha256")
+        wrong_schedule["report_sha256"] = verifier.sha256_json(
+            wrong_schedule_payload
+        )
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "target host executor evidence drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T2-H1A",
+                gate="Q5",
+                evidence=wrong_schedule,
+                build=build,
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest={"screen_schedule": {"commands": 206}},
+                trusted_q5_executor=trusted_q5,
             )
 
     def approved_report(
