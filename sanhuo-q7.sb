@@ -60,6 +60,7 @@
   (subpath (param "GIT_DIR"))
   (subpath (param "CACHE"))
   (subpath (param "TRUSTED_ROOT"))
+  (subpath (param "RUNTIME_HOME"))
   (subpath (param "OUTPUT_ROOT"))
   (subpath (param "SEALED_INPUT"))
   (subpath (param "PYTHON_ROOT"))

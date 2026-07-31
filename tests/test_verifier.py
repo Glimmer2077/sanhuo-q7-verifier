@@ -640,7 +640,7 @@ class TrustedVerifierTests(unittest.TestCase):
                     )
                 ],
                 "-D",
-                f"SEALED_INPUT={paths['runtime']}",
+                f"SEALED_INPUT={paths['cache']}",
                 "-D",
                 f"XCODE_ROOT={developer_root}",
                 "-D",
@@ -801,6 +801,8 @@ class TrustedVerifierTests(unittest.TestCase):
                     f"generated=Path({json.dumps(str(paths['runtime'] / 'generated-tool'))})\n"
                     "generated.write_text('#!/bin/sh\\nexit 0\\n', encoding='utf-8')\n"
                     "generated.chmod(0o700)\n"
+                    "if generated.read_text(encoding='utf-8') != '#!/bin/sh\\nexit 0\\n':\n"
+                    "    raise RuntimeError('runtime output could not be read back')\n"
                     "if subprocess.run([str(generated)], check=False).returncode != 0:\n"
                     "    raise RuntimeError('generated sandbox test could not execute')\n"
                     "handle.cleanup()\n"
