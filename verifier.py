@@ -3281,7 +3281,7 @@ def _validate_gate_semantics(
     if gate == "Q4":
         tests = _validate_pytest_evidence(
             evidence,
-            expected_tests=21,
+            expected_tests=22,
             extra_fields=frozenset(
                 {
                     "shared_executor_core_sha256",
