@@ -563,6 +563,28 @@ class TrustedVerifierTests(unittest.TestCase):
                 tracked_manifest=tracked,
             )
 
+        t2_tracked = copy.deepcopy(tracked)
+        t2_tracked["screen_schedule"]["commands"] = 206
+        t2_evidence = copy.deepcopy(evidence)
+        t2_evidence["metrics"]["command_count"] = 206
+        t2_evidence["known_reversal"] = [
+            {
+                "axis": "tilt",
+                "at_ms": 17_100,
+                "source_at_ms": 17_100,
+            }
+        ]
+        t2_summary = verifier._validate_gate_semantics(
+            candidate="MF-T2-H1A",
+            gate="Q3",
+            evidence=t2_evidence,
+            build={"reproducibility": {}},
+            trusted_elf={},
+            trusted_q0={},
+            tracked_manifest=t2_tracked,
+        )
+        self.assertEqual(t2_summary["commands"], 206)
+
     def approved_report(
         self,
         role: str,

@@ -3368,6 +3368,11 @@ def _validate_gate_semantics(
     if gate == "Q3":
         schedule = tracked_manifest.get("screen_schedule")
         reversal = evidence.get("known_reversal")
+        expected_reversal_axes = {
+            "MF-T0-H1A": {"pan", "tilt"},
+            "MF-T1-H1A": {"pan", "tilt"},
+            "MF-T2-H1A": {"tilt"},
+        }[candidate]
         _require(
             set(evidence)
             == {
@@ -3400,8 +3405,9 @@ def _validate_gate_semantics(
                 "uac": False,
             }
             and type(reversal) is list
-            and len(reversal) == 2
-            and {item.get("axis") for item in reversal} == {"pan", "tilt"}
+            and len(reversal) == len(expected_reversal_axes)
+            and {item.get("axis") for item in reversal}
+            == expected_reversal_axes
             and all(
                 item.get("at_ms") == 17_100
                 and item.get("source_at_ms") == 17_100
