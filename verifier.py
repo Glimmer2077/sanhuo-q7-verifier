@@ -164,6 +164,50 @@ RUNTIME_SCREEN_MANIFEST_FIELDS: Final = {
     "firmware_capabilities",
     "build_tool_capabilities",
 }
+SCREEN_COMMAND_FIELDS: Final = {
+    "at_ms",
+    "axis",
+    "raw",
+    "move_time_ms",
+    "speed",
+    "source_at_ms",
+}
+SCREEN_PARAMETERS: Final = {
+    "tick_ms": 20,
+    "ack_budget_ms": 25,
+    "automatic_retry": False,
+    "automatic_reset": False,
+    "runtime_override": False,
+    "audio": False,
+    "face": False,
+    "uac": False,
+    "full_timeline": False,
+}
+SCREEN_SAFETY: Final = {
+    "h0_position_commands": 0,
+    "fresh_boot_nonce_required": True,
+    "arm_count_maximum": 1,
+    "second_arm_rejected": True,
+    "safe_center_attempts_maximum": 1,
+    "terminal_after_run": True,
+}
+SCREEN_HARDWARE_STATE: Final = {
+    "eligible": False,
+    "flashable": False,
+    "authorized": False,
+    "commands": [],
+}
+EXPECTED_SCREEN: Final = {
+    "MF-T0-H1A": {"parent": "MF-T0", "commands": 434},
+    "MF-T1-H1A": {"parent": "MF-T1", "commands": 364},
+    "MF-T2-H1A": {"parent": "MF-T2", "commands": 206},
+}
+EXPECTED_REVERSAL_AXES: Final = {
+    "MF-T0-H1A": {"pan", "tilt"},
+    "MF-T1-H1A": {"pan", "tilt"},
+    "MF-T2-H1A": {"tilt"},
+}
+EXACT_SCHEDULE_DIGEST_PATTERN: Final = re.compile(r"^[0-9a-f]{16}$")
 GIT_ENVIRONMENT_FIELDS: Final = {
     "HOME",
     "PATH",
@@ -3283,6 +3327,196 @@ def _validate_screen_pytest_evidence(value: Any) -> dict[str, Any]:
     return {"tests": 12, "path": value["path"]}
 
 
+def _render_exact_screen_header(
+    candidate: str,
+    commands: list[dict[str, Any]],
+) -> bytes:
+    expected = EXPECTED_SCREEN[candidate]
+    lines = [
+        "#pragma once",
+        "",
+        "#include <array>",
+        "#include <cstdint>",
+        "",
+        "namespace sanhuo::motion_matrix {",
+        "struct GeneratedCommand {",
+        "  uint32_t at_ms;",
+        "  uint8_t servo_id;",
+        "  uint16_t raw;",
+        "  uint16_t move_time_ms;",
+        "  uint16_t speed;",
+        "};",
+        f'inline constexpr char kCandidateId[] = "{candidate}";',
+        (
+            "inline constexpr char kParentCandidateId[] = "
+            f'"{expected["parent"]}";'
+        ),
+        'inline constexpr char kScenarioId[] = "h0_plus_h1a_20s";',
+        "inline constexpr uint32_t kScreenDurationMs = 20000U;",
+        f"inline constexpr std::array<GeneratedCommand, {len(commands)}> "
+        "kGeneratedCommands = {{",
+    ]
+    for command in commands:
+        servo_id = 1 if command["axis"] == "pan" else 2
+        lines.append(
+            "  GeneratedCommand{"
+            f"{command['at_ms']}U, {servo_id}U, {command['raw']}U, "
+            f"{command['move_time_ms']}U, {command['speed']}U"
+            "},"
+        )
+    lines.extend(["}};", "}  // namespace sanhuo::motion_matrix", ""])
+    return "\n".join(lines).encode("utf-8")
+
+
+def _exact_schedule_digest(commands: list[dict[str, Any]]) -> str:
+    digest = 1469598103934665603
+    for command in commands:
+        servo_id = 1 if command["axis"] == "pan" else 2
+        for value in (
+            command["at_ms"],
+            servo_id,
+            command["raw"],
+            command["move_time_ms"],
+            command["speed"],
+        ):
+            for _ in range(8):
+                digest ^= value & 0xFF
+                digest = (digest * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+                value >>= 8
+    return f"{digest:016x}"
+
+
+def _validate_exact_q3_schedule(
+    *,
+    candidate: str,
+    evidence: Mapping[str, Any],
+    tracked_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected = EXPECTED_SCREEN[candidate]
+    _require(
+        set(evidence)
+        == {
+            "screen_schedule_sha256",
+            "parent_schedule_sha256",
+            "parent_prefix_sha256",
+            "commands",
+            "metrics",
+            "parameters",
+            "known_reversal",
+        },
+        f"{candidate} Q3 exact schedule fields drift",
+    )
+    commands = evidence.get("commands")
+    _require(
+        type(commands) is list and len(commands) == expected["commands"],
+        f"{candidate} Q3 exact schedule count drift",
+    )
+    normalized: list[dict[str, Any]] = []
+    previous_time = -1
+    for index, command in enumerate(commands):
+        _require(
+            type(command) is dict and set(command) == SCREEN_COMMAND_FIELDS,
+            f"{candidate} Q3 command {index} fields drift",
+        )
+        at_ms = command.get("at_ms")
+        raw = command.get("raw")
+        move_time_ms = command.get("move_time_ms")
+        speed = command.get("speed")
+        source_at_ms = command.get("source_at_ms")
+        _require(
+            type(at_ms) is int
+            and previous_time <= at_ms < 20_000
+            and command.get("axis") in {"pan", "tilt"}
+            and type(raw) is int
+            and 0 <= raw <= 1000
+            and type(move_time_ms) is int
+            and 0 < move_time_ms <= 400
+            and type(speed) is int
+            and speed == 0
+            and type(source_at_ms) is int
+            and source_at_ms >= 0,
+            f"{candidate} Q3 command {index} value drift",
+        )
+        previous_time = at_ms
+        normalized.append(dict(command))
+    reversal = [
+        {
+            "index": index,
+            "at_ms": command["at_ms"],
+            "source_at_ms": command["source_at_ms"],
+            "axis": command["axis"],
+            "raw": command["raw"],
+        }
+        for index, command in enumerate(normalized)
+        if command["at_ms"] == 17_100 or command["source_at_ms"] == 17_100
+    ]
+    metrics = {
+        "command_count": len(normalized),
+        "pan_transactions": sum(command["axis"] == "pan" for command in normalized),
+        "tilt_transactions": sum(
+            command["axis"] == "tilt" for command in normalized
+        ),
+        "last_command_at_ms": normalized[-1]["at_ms"],
+        "contains_known_reversal": True,
+    }
+    _require(
+        evidence.get("known_reversal") == reversal
+        and {item["axis"] for item in reversal} == EXPECTED_REVERSAL_AXES[candidate]
+        and evidence.get("metrics") == metrics
+        and evidence.get("parameters") == SCREEN_PARAMETERS,
+        f"{candidate} Q3 exact schedule semantics drift",
+    )
+    prefix_sha256 = sha256_json(normalized)
+    parent_evidence = tracked_manifest.get("parent_evidence")
+    tracked_schedule = tracked_manifest.get("screen_schedule")
+    _require(
+        evidence.get("parent_prefix_sha256") == prefix_sha256
+        and tracked_manifest.get("candidate_id") == candidate
+        and tracked_manifest.get("parent_candidate_id") == expected["parent"]
+        and tracked_manifest.get("scenario") == "h0_plus_h1a_20s"
+        and tracked_manifest.get("duration_ms") == 20_000
+        and tracked_manifest.get("hardware_state") == SCREEN_HARDWARE_STATE
+        and type(parent_evidence) is dict
+        and evidence.get("parent_schedule_sha256")
+        == parent_evidence.get("schedule_sha256")
+        and type(tracked_schedule) is dict
+        and tracked_schedule.get("commands") == len(normalized)
+        and tracked_schedule.get("parent_prefix_sha256") == prefix_sha256
+        and tracked_schedule.get("contains_known_reversal") is True,
+        f"{candidate} Q3 tracked schedule binding drift",
+    )
+    screen = {
+        "schema": "sanhuo.motion_phase2c_screen.v1",
+        "candidate_id": candidate,
+        "parent_candidate_id": expected["parent"],
+        "scenario": "h0_plus_h1a_20s",
+        "duration_ms": 20_000,
+        "parent_schedule_sha256": evidence["parent_schedule_sha256"],
+        "parent_prefix_sha256": prefix_sha256,
+        "parent_q7": tracked_manifest.get("parent_q7"),
+        "parameters": SCREEN_PARAMETERS,
+        "commands": normalized,
+        "metrics": metrics,
+        "safety": SCREEN_SAFETY,
+        "hardware_state": SCREEN_HARDWARE_STATE,
+    }
+    screen_sha256 = sha256_json(screen)
+    _require(
+        evidence.get("screen_schedule_sha256") == screen_sha256
+        and tracked_schedule.get("sha256") == screen_sha256,
+        f"{candidate} Q3 complete screen schedule hash drift",
+    )
+    return {
+        "commands": normalized,
+        "screen_schedule_sha256": screen_sha256,
+        "parent_prefix_sha256": prefix_sha256,
+        "generated_schedule_sha256": hashlib.sha256(
+            _render_exact_screen_header(candidate, normalized)
+        ).hexdigest(),
+        "exact_schedule_digest": _exact_schedule_digest(normalized),
+    }
+
+
 def _validate_gate_semantics(
     *,
     candidate: str,
@@ -3293,6 +3527,7 @@ def _validate_gate_semantics(
     trusted_q0: Mapping[str, Any],
     tracked_manifest: Mapping[str, Any],
     trusted_q5_executor: Mapping[str, Any] | None = None,
+    exact_schedule_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Independently validate the Phase 2C H1-A safety evidence."""
 
@@ -3380,59 +3615,23 @@ def _validate_gate_semantics(
         )
         return {**tests, "firmware_warning_counts": [0, 0]}
     if gate == "Q3":
-        schedule = tracked_manifest.get("screen_schedule")
-        reversal = evidence.get("known_reversal")
-        expected_reversal_axes = {
-            "MF-T0-H1A": {"pan", "tilt"},
-            "MF-T1-H1A": {"pan", "tilt"},
-            "MF-T2-H1A": {"tilt"},
-        }[candidate]
-        _require(
-            set(evidence)
-            == {
-                "screen_schedule_sha256",
-                "parent_schedule_sha256",
-                "parent_prefix_sha256",
-                "metrics",
-                "parameters",
-                "known_reversal",
-            }
-            and type(schedule) is dict
-            and evidence["screen_schedule_sha256"] == schedule.get("sha256")
-            and evidence["parent_schedule_sha256"]
-            == tracked_manifest["parent_evidence"]["schedule_sha256"]
-            and evidence["parent_prefix_sha256"]
-            == schedule.get("parent_prefix_sha256")
-            and evidence["metrics"].get("command_count") == schedule.get("commands")
-            and evidence["metrics"].get("contains_known_reversal") is True
-            and evidence["metrics"].get("last_command_at_ms", 20_000) < 20_000
-            and evidence["parameters"]
-            == {
-                "ack_budget_ms": 25,
-                "audio": False,
-                "automatic_reset": False,
-                "automatic_retry": False,
-                "face": False,
-                "full_timeline": False,
-                "runtime_override": False,
-                "tick_ms": 20,
-                "uac": False,
-            }
-            and type(reversal) is list
-            and len(reversal) == len(expected_reversal_axes)
-            and {item.get("axis") for item in reversal}
-            == expected_reversal_axes
-            and all(
-                item.get("at_ms") == 17_100
-                and item.get("source_at_ms") == 17_100
-                for item in reversal
-            ),
-            f"{candidate} Q3 screen-prefix semantics drift",
+        binding = (
+            dict(exact_schedule_binding)
+            if exact_schedule_binding is not None
+            else _validate_exact_q3_schedule(
+                candidate=candidate,
+                evidence=evidence,
+                tracked_manifest=tracked_manifest,
+            )
         )
         return {
             "duration_ms": 20_000,
-            "commands": schedule["commands"],
+            "commands": len(binding["commands"]),
             "known_reversal_at_ms": 17_100,
+            "exact_schedule_bound": True,
+            "generated_schedule_sha256": binding[
+                "generated_schedule_sha256"
+            ],
         }
     if gate == "Q4":
         host_gate = evidence.get("host_gate")
@@ -3516,6 +3715,10 @@ def _validate_gate_semantics(
             "feedback_collision_max_sent",
             "post_failure_performance_writes",
             "safe_center_attempts_maximum",
+            "screen_schedule_sha256",
+            "parent_prefix_sha256",
+            "generated_schedule_sha256",
+            "exact_schedule_digest",
             "shared_executor_core_sha256",
             "screen_adapter_sha256",
             "trusted_harness_source_sha256",
@@ -3523,6 +3726,8 @@ def _validate_gate_semantics(
             "compiler_sha256",
             "executable_sha256",
             "stdout_sha256",
+            "target_executable_sha256",
+            "target_stdout_sha256",
         }
         _require(
             evidence.get("schema") == "sanhuo.motion_phase2c_system_matrix.v1"
@@ -3584,11 +3789,12 @@ def _validate_gate_semantics(
             f"{candidate} Q5 target host executor evidence drift",
         )
         _require(
-            type(trusted_q5_executor) is dict
+            type(exact_schedule_binding) is dict
+            and type(trusted_q5_executor) is dict
             and set(trusted_q5_executor) == expected_trusted_fields
             and trusted_q5_executor["candidate_id"] == candidate
             and trusted_q5_executor["events_per_run"]
-            == tracked_manifest["screen_schedule"]["commands"]
+            == len(exact_schedule_binding["commands"])
             and trusted_q5_executor["healthy_runs"] == 200
             and trusted_q5_executor["fault_runs"] == 200
             and trusted_q5_executor["feedback_collision_safe_stops"] == 200
@@ -3601,10 +3807,30 @@ def _validate_gate_semantics(
             == host_executor["shared_executor_core_sha256"]
             and trusted_q5_executor["screen_adapter_sha256"]
             == host_executor["screen_adapter_sha256"]
+            and trusted_q5_executor["screen_schedule_sha256"]
+            == exact_schedule_binding["screen_schedule_sha256"]
+            and trusted_q5_executor["parent_prefix_sha256"]
+            == exact_schedule_binding["parent_prefix_sha256"]
+            and trusted_q5_executor["generated_schedule_sha256"]
+            == exact_schedule_binding["generated_schedule_sha256"]
+            == host_executor["generated_schedule_sha256"]
+            and trusted_q5_executor["exact_schedule_digest"]
+            == exact_schedule_binding["exact_schedule_digest"]
+            and isinstance(
+                trusted_q5_executor["exact_schedule_digest"], str
+            )
+            and EXACT_SCHEDULE_DIGEST_PATTERN.fullmatch(
+                trusted_q5_executor["exact_schedule_digest"]
+            )
+            is not None
             and trusted_q5_executor["target_harness_source_sha256"]
             == host_executor["harness_source_sha256"]
             and trusted_q5_executor["compiler_sha256"]
-            == host_executor["compiler_sha256"],
+            == host_executor["compiler_sha256"]
+            and trusted_q5_executor["target_executable_sha256"]
+            == host_executor["executable_sha256"]
+            and trusted_q5_executor["target_stdout_sha256"]
+            == host_executor["stdout_sha256"],
             f"{candidate} Q5 trusted executor re-run drift",
         )
         for field in (
@@ -3621,11 +3847,16 @@ def _validate_gate_semantics(
         for field in (
             "shared_executor_core_sha256",
             "screen_adapter_sha256",
+            "screen_schedule_sha256",
+            "parent_prefix_sha256",
+            "generated_schedule_sha256",
             "trusted_harness_source_sha256",
             "target_harness_source_sha256",
             "compiler_sha256",
             "executable_sha256",
             "stdout_sha256",
+            "target_executable_sha256",
+            "target_stdout_sha256",
         ):
             _validate_sha256(
                 trusted_q5_executor[field],
@@ -3641,6 +3872,8 @@ def _validate_gate_semantics(
             "safe_center_attempts_maximum": 1,
             "shared_executor_host_runs": 400,
             "trusted_executor_reexecution": True,
+            "exact_schedule_bound": True,
+            "target_harness_rebuilt": True,
         }
     if gate == "Q6":
         expected = {
@@ -3710,6 +3943,7 @@ def _validate_precheck_artifacts(
     )
     expected_gate_results: dict[str, dict[str, Any]] = {}
     semantic_summary: dict[str, Any] = {}
+    exact_schedule_binding: dict[str, Any] | None = None
     for gate in GATES:
         report = gate_reports[gate]
         _require(
@@ -3734,6 +3968,12 @@ def _validate_precheck_artifacts(
             and sha256_json(report["evidence"]) == report_evidence_sha256,
             f"{candidate} {gate} raw evidence hash drift",
         )
+        if gate == "Q3":
+            exact_schedule_binding = _validate_exact_q3_schedule(
+                candidate=candidate,
+                evidence=report["evidence"],
+                tracked_manifest=tracked_manifest,
+            )
         semantic_summary[gate] = _validate_gate_semantics(
             candidate=candidate,
             gate=gate,
@@ -3743,6 +3983,7 @@ def _validate_precheck_artifacts(
             trusted_q0=trusted_q0,
             tracked_manifest=tracked_manifest,
             trusted_q5_executor=trusted_q5_executor,
+            exact_schedule_binding=exact_schedule_binding,
         )
         manifest_gate = manifest_gates.get(gate)
         _require(

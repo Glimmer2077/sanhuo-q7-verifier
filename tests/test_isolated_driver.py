@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 import tempfile
 import unittest
@@ -32,13 +33,52 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertTrue(all("sh" not in command[:1] for command in commands))
 
-    def test_trusted_q5_harness_executes_target_core_and_adapter(self) -> None:
+    def test_trusted_q5_harness_executes_exact_generated_schedule(self) -> None:
         source = isolated_driver.TRUSTED_Q5_HARNESS_SOURCE
 
+        self.assertIn('#include "motion_matrix_generated_schedule.h"', source)
         self.assertIn('#include "phase2c_screen_executor.h"', source)
         self.assertIn("screen::executeScreen(", source)
+        self.assertIn("kGeneratedCommands", source)
+        self.assertIn("command.servo_id", source)
+        self.assertIn("command.raw", source)
+        self.assertIn("command.move_time_ms", source)
+        self.assertIn("command.speed", source)
         self.assertIn("post_failure_performance_writes", source)
+        self.assertNotIn("std::strtoul", source)
+        self.assertNotIn("index * 20U", source)
         self.assertNotIn("phase2c_screen_executor.cpp", source)
+
+    def test_exact_schedule_digest_changes_with_command_values(self) -> None:
+        command = {
+            "at_ms": 17_100,
+            "axis": "tilt",
+            "raw": 512,
+            "move_time_ms": 20,
+            "speed": 0,
+            "source_at_ms": 17_100,
+        }
+        changed = dict(command)
+        changed["raw"] = 513
+
+        self.assertNotEqual(
+            isolated_driver._exact_schedule_digest([command]),
+            isolated_driver._exact_schedule_digest([changed]),
+        )
+
+    def test_trusted_result_is_captured_before_target_harness_runs(self) -> None:
+        source = inspect.getsource(
+            isolated_driver.trusted_q5_executor_evidence
+        )
+
+        self.assertLess(
+            source.index("trusted_stdout_sha256 ="),
+            source.index("target_stdout = _run_checked("),
+        )
+        self.assertLess(
+            source.index("target_executable_sha256 ="),
+            source.index("target_stdout = _run_checked("),
+        )
 
     def test_trusted_capability_derivation_rejects_missing_motion(self) -> None:
         screen_symbols = {
@@ -121,6 +161,30 @@ class IsolatedDriverTests(unittest.TestCase):
         )
         detail = isolated_driver._failure_stream_detail(b"", raw)
         self.assertLessEqual(len(detail), 1600)
+
+    def test_q5_json_rejects_duplicates_and_oversize(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            duplicate = root / "duplicate.json"
+            duplicate.write_text(
+                '{"schema":1,"schema":2}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "repeats field"):
+                isolated_driver._load_q5_json(
+                    duplicate,
+                    label="duplicate fixture",
+                )
+
+            oversized = root / "oversized.json"
+            oversized.write_bytes(
+                b"x" * (isolated_driver.MAX_Q5_EVIDENCE_BYTES + 1)
+            )
+            with self.assertRaisesRegex(RuntimeError, "size boundary"):
+                isolated_driver._load_q5_json(
+                    oversized,
+                    label="oversized fixture",
+                )
 
     def test_runtime_layout_has_no_writable_toolchain_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

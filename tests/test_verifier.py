@@ -187,19 +187,33 @@ class TrustedVerifierTests(unittest.TestCase):
             "trusted_q5_executor": {},
         }
 
-        with mock.patch.object(
-            verifier,
-            "_validate_gate_semantics",
-            return_value={"validated": True},
+        with (
+            mock.patch.object(
+                verifier,
+                "_validate_gate_semantics",
+                return_value={"validated": True},
+            ),
+            mock.patch.object(
+                verifier,
+                "_validate_exact_q3_schedule",
+                return_value={"commands": []},
+            ),
         ):
             verifier._validate_precheck_artifacts(**arguments)
 
         tampered_reports = copy.deepcopy(gate_reports)
         tampered_reports["Q3"]["covered"] = []
-        with mock.patch.object(
-            verifier,
-            "_validate_gate_semantics",
-            return_value={"validated": True},
+        with (
+            mock.patch.object(
+                verifier,
+                "_validate_gate_semantics",
+                return_value={"validated": True},
+            ),
+            mock.patch.object(
+                verifier,
+                "_validate_exact_q3_schedule",
+                return_value={"commands": []},
+            ),
         ):
             with self.assertRaisesRegex(
                 verifier.VerificationError,
@@ -211,10 +225,17 @@ class TrustedVerifierTests(unittest.TestCase):
 
         tampered_summary = copy.deepcopy(summary)
         tampered_summary["hardware_authorized"] = True
-        with mock.patch.object(
-            verifier,
-            "_validate_gate_semantics",
-            return_value={"validated": True},
+        with (
+            mock.patch.object(
+                verifier,
+                "_validate_gate_semantics",
+                return_value={"validated": True},
+            ),
+            mock.patch.object(
+                verifier,
+                "_validate_exact_q3_schedule",
+                return_value={"commands": []},
+            ),
         ):
             with self.assertRaisesRegex(
                 verifier.VerificationError,
@@ -226,10 +247,17 @@ class TrustedVerifierTests(unittest.TestCase):
 
         tampered_raw = copy.deepcopy(gate_reports)
         tampered_raw["Q2"]["evidence"]["index"] = 999
-        with mock.patch.object(
-            verifier,
-            "_validate_gate_semantics",
-            return_value={"validated": True},
+        with (
+            mock.patch.object(
+                verifier,
+                "_validate_gate_semantics",
+                return_value={"validated": True},
+            ),
+            mock.patch.object(
+                verifier,
+                "_validate_exact_q3_schedule",
+                return_value={"commands": []},
+            ),
         ):
             with self.assertRaisesRegex(
                 verifier.VerificationError,
@@ -496,47 +524,109 @@ class TrustedVerifierTests(unittest.TestCase):
             )
 
     def test_phase2c_q3_binds_screen_prefix_and_reversal(self) -> None:
-        tracked = {
-            "parent_evidence": {"schedule_sha256": "1" * 64},
-            "screen_schedule": {
-                "commands": 434,
-                "parent_prefix_sha256": "2" * 64,
-                "sha256": "3" * 64,
-            },
-        }
-        evidence = {
-            "screen_schedule_sha256": "3" * 64,
-            "parent_schedule_sha256": "1" * 64,
-            "parent_prefix_sha256": "2" * 64,
-            "metrics": {
-                "command_count": 434,
-                "contains_known_reversal": True,
-                "last_command_at_ms": 19_400,
-            },
-            "parameters": {
-                "ack_budget_ms": 25,
-                "audio": False,
-                "automatic_reset": False,
-                "automatic_retry": False,
-                "face": False,
-                "full_timeline": False,
-                "runtime_override": False,
-                "tick_ms": 20,
-                "uac": False,
-            },
-            "known_reversal": [
+        def fixture(candidate: str) -> tuple[dict[str, object], dict[str, object]]:
+            expected = verifier.EXPECTED_SCREEN[candidate]
+            reversal_axes = sorted(verifier.EXPECTED_REVERSAL_AXES[candidate])
+            base_count = expected["commands"] - len(reversal_axes) - 1
+            commands = [
                 {
-                    "axis": "pan",
+                    "at_ms": index * 16_900 // max(base_count - 1, 1),
+                    "axis": "pan" if index % 2 == 0 else "tilt",
+                    "raw": 400 + index % 200,
+                    "move_time_ms": 20,
+                    "speed": 0,
+                    "source_at_ms": index * 16_900 // max(base_count - 1, 1),
+                }
+                for index in range(base_count)
+            ]
+            commands.extend(
+                {
                     "at_ms": 17_100,
+                    "axis": axis,
+                    "raw": 500 + index,
+                    "move_time_ms": 20,
+                    "speed": 0,
                     "source_at_ms": 17_100,
-                },
+                }
+                for index, axis in enumerate(reversal_axes)
+            )
+            commands.append(
                 {
+                    "at_ms": 19_400,
                     "axis": "tilt",
-                    "at_ms": 17_100,
-                    "source_at_ms": 17_100,
+                    "raw": 678,
+                    "move_time_ms": 20,
+                    "speed": 0,
+                    "source_at_ms": 19_400,
+                }
+            )
+            metrics = {
+                "command_count": len(commands),
+                "pan_transactions": sum(
+                    command["axis"] == "pan" for command in commands
+                ),
+                "tilt_transactions": sum(
+                    command["axis"] == "tilt" for command in commands
+                ),
+                "last_command_at_ms": 19_400,
+                "contains_known_reversal": True,
+            }
+            reversal = [
+                {
+                    "index": index,
+                    "at_ms": command["at_ms"],
+                    "source_at_ms": command["source_at_ms"],
+                    "axis": command["axis"],
+                    "raw": command["raw"],
+                }
+                for index, command in enumerate(commands)
+                if command["at_ms"] == 17_100
+                or command["source_at_ms"] == 17_100
+            ]
+            prefix_sha256 = verifier.sha256_json(commands)
+            tracked: dict[str, object] = {
+                "candidate_id": candidate,
+                "parent_candidate_id": expected["parent"],
+                "scenario": "h0_plus_h1a_20s",
+                "duration_ms": 20_000,
+                "parent_q7": {"fixture": True},
+                "parent_evidence": {"schedule_sha256": "1" * 64},
+                "screen_schedule": {
+                    "commands": len(commands),
+                    "parent_prefix_sha256": prefix_sha256,
+                    "contains_known_reversal": True,
                 },
-            ],
-        }
+                "hardware_state": copy.deepcopy(verifier.SCREEN_HARDWARE_STATE),
+            }
+            screen = {
+                "schema": "sanhuo.motion_phase2c_screen.v1",
+                "candidate_id": candidate,
+                "parent_candidate_id": expected["parent"],
+                "scenario": "h0_plus_h1a_20s",
+                "duration_ms": 20_000,
+                "parent_schedule_sha256": "1" * 64,
+                "parent_prefix_sha256": prefix_sha256,
+                "parent_q7": tracked["parent_q7"],
+                "parameters": verifier.SCREEN_PARAMETERS,
+                "commands": commands,
+                "metrics": metrics,
+                "safety": verifier.SCREEN_SAFETY,
+                "hardware_state": verifier.SCREEN_HARDWARE_STATE,
+            }
+            screen_sha256 = verifier.sha256_json(screen)
+            tracked["screen_schedule"]["sha256"] = screen_sha256
+            evidence: dict[str, object] = {
+                "screen_schedule_sha256": screen_sha256,
+                "parent_schedule_sha256": "1" * 64,
+                "parent_prefix_sha256": prefix_sha256,
+                "commands": commands,
+                "metrics": metrics,
+                "parameters": copy.deepcopy(verifier.SCREEN_PARAMETERS),
+                "known_reversal": reversal,
+            }
+            return tracked, evidence
+
+        tracked, evidence = fixture("MF-T0-H1A")
         summary = verifier._validate_gate_semantics(
             candidate="MF-T0-H1A",
             gate="Q3",
@@ -552,7 +642,7 @@ class TrustedVerifierTests(unittest.TestCase):
         tampered["known_reversal"][0]["at_ms"] = 16_900
         with self.assertRaisesRegex(
             verifier.VerificationError,
-            "Q3 screen-prefix semantics drift",
+            "Q3 exact schedule",
         ):
             verifier._validate_gate_semantics(
                 candidate="MF-T0-H1A",
@@ -564,17 +654,23 @@ class TrustedVerifierTests(unittest.TestCase):
                 tracked_manifest=tracked,
             )
 
-        t2_tracked = copy.deepcopy(tracked)
-        t2_tracked["screen_schedule"]["commands"] = 206
-        t2_evidence = copy.deepcopy(evidence)
-        t2_evidence["metrics"]["command_count"] = 206
-        t2_evidence["known_reversal"] = [
-            {
-                "axis": "tilt",
-                "at_ms": 17_100,
-                "source_at_ms": 17_100,
-            }
-        ]
+        wrong_command = copy.deepcopy(evidence)
+        wrong_command["commands"][0]["raw"] += 1
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Q3 tracked schedule binding drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T0-H1A",
+                gate="Q3",
+                evidence=wrong_command,
+                build={"reproducibility": {}},
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest=tracked,
+            )
+
+        t2_tracked, t2_evidence = fixture("MF-T2-H1A")
         t2_summary = verifier._validate_gate_semantics(
             candidate="MF-T2-H1A",
             gate="Q3",
@@ -659,13 +755,26 @@ class TrustedVerifierTests(unittest.TestCase):
             "feedback_collision_max_sent": 200,
             "post_failure_performance_writes": 0,
             "safe_center_attempts_maximum": 1,
+            "screen_schedule_sha256": "f" * 64,
+            "parent_prefix_sha256": "e" * 64,
             "shared_executor_core_sha256": "4" * 64,
             "screen_adapter_sha256": "5" * 64,
             "trusted_harness_source_sha256": "b" * 64,
             "target_harness_source_sha256": "3" * 64,
+            "generated_schedule_sha256": "6" * 64,
             "compiler_sha256": "7" * 64,
             "executable_sha256": "c" * 64,
             "stdout_sha256": "d" * 64,
+            "exact_schedule_digest": "0123456789abcdef",
+            "target_executable_sha256": "8" * 64,
+            "target_stdout_sha256": "a" * 64,
+        }
+        exact_schedule_binding = {
+            "commands": [{} for _ in range(206)],
+            "screen_schedule_sha256": "f" * 64,
+            "parent_prefix_sha256": "e" * 64,
+            "generated_schedule_sha256": "6" * 64,
+            "exact_schedule_digest": "0123456789abcdef",
         }
         summary = verifier._validate_gate_semantics(
             candidate="MF-T2-H1A",
@@ -676,6 +785,7 @@ class TrustedVerifierTests(unittest.TestCase):
             trusted_q0={},
             tracked_manifest={"screen_schedule": {"commands": 206}},
             trusted_q5_executor=trusted_q5,
+            exact_schedule_binding=exact_schedule_binding,
         )
         self.assertEqual(summary["feedback_collision_safe_stops"], 100)
 
@@ -697,6 +807,7 @@ class TrustedVerifierTests(unittest.TestCase):
                 trusted_q0={},
                 tracked_manifest={"screen_schedule": {"commands": 206}},
                 trusted_q5_executor=trusted_q5,
+                exact_schedule_binding=exact_schedule_binding,
             )
 
         wrong_schedule = copy.deepcopy(evidence)
@@ -719,6 +830,25 @@ class TrustedVerifierTests(unittest.TestCase):
                 trusted_q0={},
                 tracked_manifest={"screen_schedule": {"commands": 206}},
                 trusted_q5_executor=trusted_q5,
+                exact_schedule_binding=exact_schedule_binding,
+            )
+
+        wrong_target_rebuild = copy.deepcopy(trusted_q5)
+        wrong_target_rebuild["target_stdout_sha256"] = "0" * 64
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "trusted executor re-run drift",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T2-H1A",
+                gate="Q5",
+                evidence=evidence,
+                build=build,
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest={"screen_schedule": {"commands": 206}},
+                trusted_q5_executor=wrong_target_rebuild,
+                exact_schedule_binding=exact_schedule_binding,
             )
 
     def approved_report(
