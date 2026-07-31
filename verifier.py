@@ -29,6 +29,7 @@ REPOSITORY: Final = "Glimmer2077/sanhuo-robot"
 VERIFIER_REPOSITORY: Final = "Glimmer2077/sanhuo-q7-verifier"
 CANDIDATES: Final = ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A")
 PROFILE: Final = "phase2c-h1a"
+EXPECTED_PHASE2C_TESTS: Final = 13
 TARGET_REQUIRED_COMMITS: Final = (
     "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
     "e9b8675944742cb729883ca767f5a5a98b773954",
@@ -3308,23 +3309,25 @@ def _validate_screen_pytest_evidence(value: Any) -> dict[str, Any]:
             "firmware/sanhuo-stackchan-idf/tests/"
             "test_motion_firmware_matrix_phase2c_screen.py"
         )
-        and value["expected_tests"] == 12
+        and value["expected_tests"] == EXPECTED_PHASE2C_TESTS
         and type(value["counts"]) is dict
         and set(value["counts"]) == count_fields
-        and value["counts"]["collected"] == 12
-        and value["counts"]["executed"] == 12
-        and value["counts"]["passed"] == 12
+        and value["counts"]["collected"] == EXPECTED_PHASE2C_TESTS
+        and value["counts"]["executed"] == EXPECTED_PHASE2C_TESTS
+        and value["counts"]["passed"] == EXPECTED_PHASE2C_TESTS
         and all(
             value["counts"][field] == 0
             for field in ("failed", "errors", "skipped", "xfailed", "xpassed")
         )
         and type(value["summary"]) is str
-        and value["summary"].startswith("12 passed in "),
+        and value["summary"].startswith(
+            f"{EXPECTED_PHASE2C_TESTS} passed in "
+        ),
         "Phase 2C pytest evidence is invalid",
     )
     _validate_sha256(value["python_executable_sha256"], "pytest Python")
     _validate_sha256(value["normalized_stdout_sha256"], "pytest output")
-    return {"tests": 12, "path": value["path"]}
+    return {"tests": EXPECTED_PHASE2C_TESTS, "path": value["path"]}
 
 
 def _render_exact_screen_header(

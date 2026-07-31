@@ -267,43 +267,63 @@ class TrustedVerifierTests(unittest.TestCase):
                     **{**arguments, "gate_reports": tampered_raw}
                 )
 
-    def test_q2_semantics_require_all_12_locked_screen_tests(self) -> None:
+    def test_q2_semantics_require_all_13_locked_screen_tests(self) -> None:
         counts = {
-            "collected": 12,
-            "executed": 12,
-            "passed": 12,
+            "collected": 13,
+            "executed": 13,
+            "passed": 13,
             "failed": 0,
             "errors": 0,
             "skipped": 0,
             "xfailed": 0,
             "xpassed": 0,
         }
+        evidence = {
+            "tests": {
+                "path": (
+                    "firmware/sanhuo-stackchan-idf/tests/"
+                    "test_motion_firmware_matrix_phase2c_screen.py"
+                ),
+                "expected_tests": 13,
+                "counts": counts,
+                "python_executable_sha256": "1" * 64,
+                "normalized_stdout_sha256": "2" * 64,
+                "summary": "13 passed in <elapsed>",
+            },
+            "compiler_contract": "C++17 warnings-as-errors ASan UBSan",
+            "firmware_compiler_warning_counts": [0, 0],
+            "build_report_sha256": "3" * 64,
+        }
         summary = verifier._validate_gate_semantics(
             candidate="MF-T0-H1A",
             gate="Q2",
-            evidence={
-                "tests": {
-                    "path": (
-                        "firmware/sanhuo-stackchan-idf/tests/"
-                        "test_motion_firmware_matrix_phase2c_screen.py"
-                    ),
-                    "expected_tests": 12,
-                    "counts": counts,
-                    "python_executable_sha256": "1" * 64,
-                    "normalized_stdout_sha256": "2" * 64,
-                    "summary": "12 passed in <elapsed>",
-                },
-                "compiler_contract": "C++17 warnings-as-errors ASan UBSan",
-                "firmware_compiler_warning_counts": [0, 0],
-                "build_report_sha256": "3" * 64,
-            },
+            evidence=evidence,
             build={"report_sha256": "3" * 64, "reproducibility": {}},
             trusted_elf={},
             trusted_q0={},
             tracked_manifest={},
         )
 
-        self.assertEqual(summary["tests"], 12)
+        self.assertEqual(summary["tests"], 13)
+        legacy = copy.deepcopy(evidence)
+        legacy["tests"]["expected_tests"] = 12
+        legacy["tests"]["counts"].update(
+            {"collected": 12, "executed": 12, "passed": 12}
+        )
+        legacy["tests"]["summary"] = "12 passed in <elapsed>"
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "Phase 2C pytest evidence is invalid",
+        ):
+            verifier._validate_gate_semantics(
+                candidate="MF-T0-H1A",
+                gate="Q2",
+                evidence=legacy,
+                build={"report_sha256": "3" * 64, "reproducibility": {}},
+                trusted_elf={},
+                trusted_q0={},
+                tracked_manifest={},
+            )
 
     @unittest.skip("Phase 2B remains covered by immutable verifier commit 1d9c0a2")
     def test_p2_q3_binds_exact_public_trajectory_identity(self) -> None:
