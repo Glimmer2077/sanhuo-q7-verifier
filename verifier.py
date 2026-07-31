@@ -2863,7 +2863,7 @@ def _validate_gate_semantics(
     if gate == "Q2":
         tests = _validate_pytest_evidence(
             evidence.get("tests"),
-            expected_tests=35,
+            expected_tests=36,
         )
         _require(
             evidence.get("compiler_contract")

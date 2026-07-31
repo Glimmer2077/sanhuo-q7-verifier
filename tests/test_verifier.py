@@ -202,6 +202,43 @@ class TrustedVerifierTests(unittest.TestCase):
                     **{**arguments, "gate_reports": tampered_raw}
                 )
 
+    def test_q2_semantics_require_all_36_locked_tests(self) -> None:
+        counts = {
+            "collected": 36,
+            "executed": 36,
+            "passed": 36,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "xfailed": 0,
+            "xpassed": 0,
+        }
+        capabilities = {"motion": True}
+        summary = verifier._validate_gate_semantics(
+            candidate="MF-P2",
+            gate="Q2",
+            evidence={
+                "tests": {
+                    "paths": ["locked-q2-suite.py"],
+                    "returncode": 0,
+                    "expected_tests": 36,
+                    "counts": counts,
+                    "python_executable_sha256": "1" * 64,
+                    "normalized_stdout_sha256": "2" * 64,
+                    "summary": "36 passed",
+                },
+                "compiler_contract": "C++17 warnings-as-errors ASan UBSan",
+                "firmware_compiler_warning_counts": [0, 0],
+                "firmware_capabilities": capabilities,
+                "build_report_sha256": "3" * 64,
+            },
+            build={"report_sha256": "3" * 64},
+            trusted_elf={"firmware_capabilities": capabilities},
+            trusted_q0={},
+        )
+
+        self.assertEqual(summary["tests"], 36)
+
     def approved_report(
         self,
         role: str,
