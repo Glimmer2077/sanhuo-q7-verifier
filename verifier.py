@@ -4405,6 +4405,19 @@ P2_SOURCE_DIFF_SHA256: Final = (
 P2_PARENT_SOURCE_DIFF_SHA256: Final = (
     "55c7bf56969dfdf6afb2c2d5b1f22e5c611022fc808895cb564ba421c2310207"
 )
+P2_ALLOWED_CHANGED_FILES: Final = [
+    "lib/StackChanBSP/src/M5StackChan.cpp",
+    "lib/StackChanBSP/src/M5StackChan.h",
+    "platformio.ini",
+    "stackchan-screen.patch",
+    "src/main.cpp",
+    "src/motion_matrix_public_targets.h",
+    "src/phase2_observer.cpp",
+    "src/phase2_observer.h",
+    "src/phase2c_p2_executor.h",
+    "src/phase2c_p2_observer_core.h",
+    "src/phase2c_screen_protocol.h",
+]
 P2_CHANGED_SOURCE_HASHES: Final = {
     "lib/StackChanBSP/src/M5StackChan.cpp": (
         "094450455921d120e813b46c53be33b5d656e7f4c7b6460f1c60c1630d227929"
@@ -4465,7 +4478,7 @@ def _validate_p2_source_diff(value: object) -> dict[str, Any]:
         and value.get("baseline_file_count") == 519
         and value.get("materialized_file_count") == 523
         and value.get("changed_file_sha256") == P2_CHANGED_SOURCE_HASHES
-        and value.get("allowed_changed_files") == list(P2_CHANGED_SOURCE_HASHES),
+        and value.get("allowed_changed_files") == P2_ALLOWED_CHANGED_FILES,
         "P2 source diff audit drift",
     )
     protected = value.get("protected_source_hashes")

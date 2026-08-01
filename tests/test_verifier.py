@@ -1528,7 +1528,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "audit_sha256": verifier.P2_SOURCE_DIFF_SHA256,
             "baseline_file_count": 519,
             "materialized_file_count": 523,
-            "allowed_changed_files": list(verifier.P2_CHANGED_SOURCE_HASHES),
+            "allowed_changed_files": list(verifier.P2_ALLOWED_CHANGED_FILES),
             "changed_file_sha256": dict(verifier.P2_CHANGED_SOURCE_HASHES),
             "protected_source_hashes": {
                 name: "a" * 64
