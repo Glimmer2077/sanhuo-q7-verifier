@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -220,6 +221,25 @@ class IsolatedDriverTests(unittest.TestCase):
             raw[-isolated_driver.MAX_SINGLE_FAILURE_EXCERPT_BYTES :],
         )
         detail = isolated_driver._failure_stream_detail(b"", raw)
+        self.assertLessEqual(len(detail), 1600)
+
+    def test_nested_failure_preserves_child_excerpt_head_and_tail(self) -> None:
+        nested = b"ASSERTION-HEAD\n" + (b"x" * 1000) + b"\nSUMMARY-TAIL"
+        stderr = (
+            b"trusted child failed: stdout_tail_hex="
+            + nested.hex().encode("ascii")
+            + b"; command_returncode=1\n"
+        )
+
+        detail = isolated_driver._failure_stream_detail(b"", stderr)
+
+        head_match = re.search(r"nested_head_hex=([0-9a-f]+)", detail)
+        tail_match = re.search(r"nested_tail_hex=([0-9a-f]+)", detail)
+        self.assertIsNotNone(head_match)
+        self.assertIsNotNone(tail_match)
+        assert head_match is not None and tail_match is not None
+        self.assertTrue(bytes.fromhex(head_match.group(1)).startswith(b"ASSERTION-HEAD"))
+        self.assertTrue(bytes.fromhex(tail_match.group(1)).endswith(b"SUMMARY-TAIL"))
         self.assertLessEqual(len(detail), 1600)
 
     def test_q5_json_rejects_duplicates_and_oversize(self) -> None:

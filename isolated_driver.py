@@ -685,7 +685,33 @@ def _failure_output_tail_hex(output: bytes, *, limit: int) -> str:
     return output[-limit:].hex()
 
 
+def _nested_failure_detail(stderr: bytes) -> str | None:
+    """Preserve both ends of a bounded hex-encoded child failure excerpt."""
+
+    matches = re.findall(rb"[A-Za-z_]*tail_hex=([0-9a-f]*)", stderr)
+    encoded = max((item for item in matches if item), key=len, default=None)
+    if encoded is None or len(encoded) % 2 != 0:
+        return None
+    try:
+        nested = bytes.fromhex(encoded.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    excerpt = 240
+    outer_excerpt = 128
+    return (
+        "nested_head_hex="
+        f"{nested[:excerpt].hex()}; "
+        "nested_tail_hex="
+        f"{nested[-excerpt:].hex()}; "
+        "outer_stderr_tail_hex="
+        f"{_failure_output_tail_hex(stderr, limit=outer_excerpt)}"
+    )
+
+
 def _failure_stream_detail(stdout: bytes, stderr: bytes) -> str:
+    nested = _nested_failure_detail(stderr)
+    if nested is not None:
+        return nested
     limit = (
         MAX_SPLIT_FAILURE_EXCERPT_BYTES
         if stdout and stderr
