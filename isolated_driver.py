@@ -756,13 +756,60 @@ def _run_checked(command: list[str], *, cwd: Path, timeout: int) -> bytes:
     return stdout
 
 
+def _p2_qualify_failure_diagnostic() -> str:
+    """Re-run only the fixed failing P2 test inside the existing sandbox."""
+
+    environment = _closed_environment()
+    environment["PYTHONPATH"] = os.environ["SANHUO_Q7_TEST_USER_SITE_ROOT"]
+    command = [
+        os.environ["SANHUO_Q7_TEST_PYTHON"],
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "tests/test_motion_firmware_matrix_phase2c_p2_screen.py",
+        "-k",
+        "materialization_is_an_overlay_and_preserves_parent_payload",
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=CLI.parents[2],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=300)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        return "fixed_pytest_diagnostic=timeout"
+    excerpt = 320
+    combined = stdout + stderr
+    return (
+        f"fixed_pytest_returncode={process.returncode}; "
+        f"fixed_pytest_head_hex={combined[:excerpt].hex()}; "
+        f"fixed_pytest_tail_hex={combined[-excerpt:].hex()}"
+    )
+
+
 def run_selected_action() -> dict[str, object]:
     candidate, action, command = selected_matrix_command()
-    stdout = _run_checked(
-        command,
-        cwd=CLI.parents[1],
-        timeout=3600,
-    )
+    try:
+        stdout = _run_checked(
+            command,
+            cwd=CLI.parents[1],
+            timeout=3600,
+        )
+    except RuntimeError as exc:
+        if action != "qualify":
+            raise
+        diagnostic = _p2_qualify_failure_diagnostic()
+        raise RuntimeError(f"{exc}; {diagnostic}") from None
     return {
         "schema": "sanhuo.trusted_q7_isolated_action.v1",
         "status": "passed",

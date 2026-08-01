@@ -242,6 +242,38 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertTrue(bytes.fromhex(tail_match.group(1)).endswith(b"SUMMARY-TAIL"))
         self.assertLessEqual(len(detail), 1600)
 
+    def test_qualify_failure_runs_only_the_fixed_p2_diagnostic(self) -> None:
+        environment = {
+            "SANHUO_Q7_CANDIDATE": "MF-P2-H1A",
+            "SANHUO_Q7_ACTION": "qualify",
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(
+                isolated_driver,
+                "_run_checked",
+                side_effect=RuntimeError("qualify failed"),
+            ),
+            mock.patch.object(
+                isolated_driver,
+                "_p2_qualify_failure_diagnostic",
+                return_value="fixed_pytest_returncode=1",
+            ) as diagnostic,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "fixed_pytest_returncode=1",
+            ):
+                isolated_driver.run_selected_action()
+
+        diagnostic.assert_called_once_with()
+        source = inspect.getsource(
+            isolated_driver._p2_qualify_failure_diagnostic
+        )
+        self.assertIn("materialization_is_an_overlay", source)
+        self.assertNotIn("shell=True", source)
+        self.assertNotIn("/dev/", source)
+
     def test_q5_json_rejects_duplicates_and_oversize(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
