@@ -13,13 +13,14 @@ import sys
 from pathlib import Path
 
 
-CANDIDATES = ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A")
+CANDIDATES = ("MF-P2-H1A",)
 ACTIONS = ("build", "qualify", "audit")
 CLI = Path(
     os.environ.get("SANHUO_Q7_CHECKOUT", "/workspace")
     + "/firmware/sanhuo-stackchan-idf/"
-    "tools/motion_firmware_matrix/cli_phase2c.py"
+    "tools/motion_firmware_matrix/cli_phase2c_p2.py"
 )
+CLI_MODULE = "motion_firmware_matrix.cli_phase2c_p2"
 MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_SINGLE_FAILURE_EXCERPT_BYTES = 768
 MAX_SPLIT_FAILURE_EXCERPT_BYTES = 320
@@ -58,6 +59,9 @@ SCREEN_HARDWARE_STATE = {
     "authorized": False,
     "commands": [],
 }
+# The original T0-T2 fixtures below remain only for regression tests of the
+# hardened parsers. The live action matrix is fixed by CANDIDATES and the P2
+# overrides near the end of this module; these fixtures are never dispatched.
 EXPECTED_SCREEN = {
     "MF-T0-H1A": {
         "parent": "MF-T0",
@@ -341,12 +345,184 @@ _TRUSTED_Q5_OUTPUT = re.compile(
     rb"safe_center_attempts_maximum=(\d+) passed=1\n$"
 )
 
+# This verifier commit is a fixed one-candidate profile.  The older Phase 2C
+# schedule helpers above remain inert; the live profile is deliberately bound
+# to the exact public P2 target list and the P2 runtime cores below.
+TRUSTED_TARGETS = (
+    {"at_ms": 0, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 1060, "yaw_tenths": 0, "pitch_tenths": -110},
+    {"at_ms": 1620, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 6260, "yaw_tenths": 350, "pitch_tenths": 0},
+    {"at_ms": 9640, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 12700, "yaw_tenths": 350, "pitch_tenths": 0},
+    {"at_ms": 12880, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 13060, "yaw_tenths": 350, "pitch_tenths": 0},
+    {"at_ms": 13240, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 13420, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 13600, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 16080, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 16580, "yaw_tenths": 0, "pitch_tenths": 140},
+    {"at_ms": 17080, "yaw_tenths": 350, "pitch_tenths": 0},
+    {"at_ms": 17580, "yaw_tenths": 0, "pitch_tenths": -120},
+    {"at_ms": 18080, "yaw_tenths": -350, "pitch_tenths": 0},
+    {"at_ms": 18440, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 18580, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 18880, "yaw_tenths": 0, "pitch_tenths": 0},
+    {"at_ms": 19380, "yaw_tenths": 0, "pitch_tenths": 0},
+)
+TRUSTED_TARGETS_SHA256 = (
+    "db843ff1200e942ce50b12178a897478dead0a07fe4aaca4fcd7691c4bfb1e58"
+)
+TRUSTED_CONTRACT_SHA256 = (
+    "3348118754bd19605d51804da783e97ddc9abc26114cb8f53408bd9825f58798"
+)
+TRUSTED_Q5_HARNESS_SOURCE = r'''#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+
+#include "phase2c_p2_executor.h"
+#include "phase2c_p2_observer_core.h"
+
+namespace {
+
+namespace p2 = sanhuo::motion_matrix::p2;
+
+struct Target {
+  uint32_t at_ms;
+  int yaw_tenths;
+  int pitch_tenths;
+};
+
+constexpr std::array<Target, 20> kTrustedTargets = {{
+    {0, 0, 0},       {1060, 0, -110},  {1620, 0, 0},
+    {6260, 350, 0},  {9640, -350, 0},  {12700, 350, 0},
+    {12880, -350, 0},{13060, 350, 0}, {13240, -350, 0},
+    {13420, 0, 0},   {13600, -350, 0},{16080, -350, 0},
+    {16580, 0, 140}, {17080, 350, 0}, {17580, 0, -120},
+    {18080, -350, 0},{18440, 0, 0},   {18580, 0, 0},
+    {18880, 0, 0},   {19380, 0, 0},
+}};
+
+struct Metrics {
+  std::size_t failure_index = 0;
+  std::size_t dispatched = 0;
+  std::size_t post_failure_targets = 0;
+  std::size_t center_attempts = 0;
+  uint32_t virtual_ms = 0;
+  bool failed = false;
+};
+
+p2::ScreenOutcome run(uint32_t seed, bool inject_failure, Metrics* metrics) {
+  assert(metrics != nullptr);
+  metrics->failure_index = (static_cast<std::size_t>(seed) * 37U) % 20U;
+  std::size_t wait_index = 0;
+  return p2::executeScreen(
+      kTrustedTargets, 20000U,
+      [metrics, seed, &wait_index](uint32_t at_ms) {
+        const uint32_t jitter = (seed * 17U + wait_index * 13U) % 7U;
+        const uint32_t sparse = (seed + wait_index) % 41U == 0U ? 40U : 0U;
+        const uint32_t blocked = (seed + wait_index) % 67U == 0U ? 100U : 0U;
+        metrics->virtual_ms = std::max(metrics->virtual_ms,
+                                       at_ms + jitter + sparse + blocked);
+        ++wait_index;
+        return !metrics->failed;
+      },
+      [metrics, inject_failure](const Target&) {
+        if (metrics->failed) {
+          ++metrics->post_failure_targets;
+        }
+        if (inject_failure && metrics->dispatched == metrics->failure_index) {
+          metrics->failed = true;
+        }
+        ++metrics->dispatched;
+      },
+      [metrics]() { return metrics->failed; },
+      [metrics]() {
+        ++metrics->center_attempts;
+        return true;
+      },
+      [metrics]() {
+        ++metrics->center_attempts;
+        return true;
+      });
+}
+
+void verifyObserver() {
+  p2::ObserverCore observer;
+  observer.authorizeWrites(100U);
+  observer.observePerformanceWrite(120U, 1U, 459U, 1, 0U, 0U);
+  observer.observePerformanceWrite(240U, 2U, 678U, 0, 1U, 0U);
+  assert(observer.failureLatched());
+  assert(!observer.writesAllowed());
+  assert(observer.snapshot().first_error_at_ms == 140U);
+  assert(observer.snapshot().first_error_class == p2::AckClass::kNoReply);
+  assert(observer.beginFailureCenter());
+  assert(!observer.beginFailureCenter());
+  observer.observeSafeCenterWrite(250U, 1U, 459U, 1, 0U, 0U);
+  observer.observeSafeCenterWrite(260U, 2U, 678U, 1, 0U, 0U);
+  observer.finishSafeCenter(true);
+  assert(observer.snapshot().safe_center_succeeded);
+}
+
+}  // namespace
+
+int main() {
+  verifyObserver();
+  std::size_t healthy_runs = 0;
+  std::size_t fault_runs = 0;
+  uint32_t failure_indices_covered = 0;
+  std::size_t post_failure_targets = 0;
+  std::size_t safe_center_attempts_maximum = 0;
+  for (uint32_t seed = 0; seed < 100U; ++seed) {
+    for (uint32_t repeat = 0; repeat < 2U; ++repeat) {
+      Metrics healthy;
+      const auto healthy_outcome = run(seed, false, &healthy);
+      assert(healthy_outcome.result == p2::ScreenResult::kCompleted);
+      assert(healthy_outcome.targets_dispatched == 20U);
+      assert(healthy.center_attempts == 1U);
+      ++healthy_runs;
+
+      Metrics fault;
+      const auto fault_outcome = run(seed + repeat * 100U, true, &fault);
+      assert(fault_outcome.result == p2::ScreenResult::kMotionFailed);
+      assert(fault_outcome.targets_dispatched == fault.failure_index + 1U);
+      assert(fault.center_attempts == 1U);
+      failure_indices_covered |= 1U << fault.failure_index;
+      post_failure_targets += fault.post_failure_targets;
+      safe_center_attempts_maximum = std::max(
+          safe_center_attempts_maximum, fault.center_attempts);
+      ++fault_runs;
+    }
+  }
+  assert(healthy_runs == 200U && fault_runs == 200U);
+  assert(failure_indices_covered == ((1U << 20U) - 1U));
+  assert(post_failure_targets == 0U);
+  assert(safe_center_attempts_maximum == 1U);
+  std::cout << "TRUSTED_PHASE2C_P2_Q5 candidate=MF-P2-H1A"
+            << " healthy_runs=" << healthy_runs << " fault_runs=" << fault_runs
+            << " failure_indices_covered=" << failure_indices_covered
+            << " post_failure_targets=" << post_failure_targets
+            << " safe_center_attempts_maximum="
+            << safe_center_attempts_maximum << " passed=1\n";
+  return 0;
+}
+'''
+_TRUSTED_Q5_OUTPUT = re.compile(
+    rb"^TRUSTED_PHASE2C_P2_Q5 candidate=MF-P2-H1A healthy_runs=(\d+) "
+    rb"fault_runs=(\d+) failure_indices_covered=(\d+) "
+    rb"post_failure_targets=(\d+) safe_center_attempts_maximum=(\d+) "
+    rb"passed=1\n$"
+)
+
 
 def matrix_commands() -> list[list[str]]:
     """Describe the fixed matrix without executing it."""
 
     return [
-        [sys.executable, str(CLI), action, "--candidate", candidate]
+        [sys.executable, "-m", CLI_MODULE, action]
         for candidate in CANDIDATES
         for action in ACTIONS
     ]
@@ -360,7 +536,7 @@ def selected_matrix_command() -> tuple[str, str, list[str]]:
     return (
         candidate,
         action,
-        [sys.executable, str(CLI), action, "--candidate", candidate],
+        [sys.executable, "-m", CLI_MODULE, action],
     )
 
 
@@ -376,19 +552,22 @@ def derive_capabilities(
 
     if candidate not in CANDIDATES or not symbols:
         raise RuntimeError("ELF executable symbol evidence is missing")
-    uart = _symbol_contains(symbols, "uart_write_bytes")
     required_motion = (
-        "sendStrict",
-        "attemptSafeCenter",
+        "M5StackChan_Class::begin",
+        "Motion::move(",
+        "SCSCL::WritePos",
         "waitForArm",
         "runH0",
     )
-    required_transport = ("uart_write_bytes", "usb_serial_jtag_read_bytes")
     if not all(
         _symbol_contains(symbols, marker)
-        for marker in required_motion + required_transport
+        for marker in required_motion
     ):
         raise RuntimeError(f"{candidate} motion capability is absent")
+    if not _symbol_contains(symbols, "uart_write_bytes"):
+        raise RuntimeError(f"{candidate} UART capability is absent")
+    if not _symbol_contains(symbols, "M5StackChan_Class::getBatteryVoltage"):
+        raise RuntimeError("P2 INA226 capability is absent")
     return {
         "uart": True,
         "motion": True,
@@ -401,12 +580,20 @@ def derive_capabilities(
                 "i2s_channel_write(",
             )
         ),
-        "usb": True,
+        "usb": any(
+            _symbol_contains(symbols, marker)
+            for marker in (
+                "TinyUSBDriver",
+                "USBCDC::begin(",
+                "USBDeviceClass::begin(",
+                "tud_task(",
+            )
+        ),
         "face": any(
             _symbol_contains(symbols, marker)
             for marker in ("FaceRenderer", "MouthRenderer", "lv_obj_")
         ),
-        "ina226": False,
+        "ina226": True,
     }
 
 
@@ -547,7 +734,7 @@ def run_selected_action() -> dict[str, object]:
     candidate, action, command = selected_matrix_command()
     stdout = _run_checked(
         command,
-        cwd=Path(os.environ["SANHUO_Q7_CHECKOUT"]),
+        cwd=CLI.parents[1],
         timeout=3600,
     )
     return {
@@ -566,11 +753,10 @@ def _elf_tools(candidate: str) -> tuple[Path, Path]:
     if candidate not in CANDIDATES:
         raise RuntimeError("trusted ELF candidate is invalid")
     root = (
-        Path(os.environ["SANHUO_Q7_ESPRESSIF_ROOT"])
-        / "tools/xtensa-esp-elf/esp-14.2.0_20260121/"
-        "xtensa-esp-elf/bin"
+        Path(os.environ["SANHUO_Q7_PLATFORMIO_ROOT"])
+        / "packages/toolchain-xtensa-esp32s3/bin"
     )
-    prefix = "xtensa-esp-elf"
+    prefix = "xtensa-esp32s3-elf"
     return root / f"{prefix}-objcopy", root / f"{prefix}-nm"
 
 
@@ -982,7 +1168,7 @@ def _target_q5_build_layout(checkout: Path) -> dict[str, Path]:
     }
 
 
-def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
+def _legacy_trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
     """Execute exact Q3 schedules, then reproduce the target Q5 artifacts."""
 
     checkout = Path(os.environ["SANHUO_Q7_CHECKOUT"])
@@ -1149,6 +1335,339 @@ def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
             "target_stdout_sha256": target_stdout_sha256,
         }
     return evidence
+
+
+def _trusted_targets_sha256() -> str:
+    return _sha256_json(list(TRUSTED_TARGETS))
+
+
+def _render_p2_targets_header() -> bytes:
+    lines = [
+        "#pragma once",
+        "",
+        "#include <array>",
+        "#include <cstdint>",
+        "",
+        "struct PublicTarget {",
+        "  uint32_t at_ms;",
+        "  int yaw_tenths;",
+        "  int pitch_tenths;",
+        "};",
+        "",
+        'inline constexpr char kCandidateId[] = "MF-P2-H1A";',
+        'inline constexpr char kParentCandidateId[] = "MF-P2";',
+        'inline constexpr char kScenarioId[] = "h0_plus_h1a_20s";',
+        "inline constexpr uint32_t kScreenDurationMs = 20000U;",
+        "inline constexpr std::array<PublicTarget, 20> kPublicTargets = {{",
+    ]
+    for target in TRUSTED_TARGETS:
+        lines.append(
+            "    PublicTarget{"
+            f"{target['at_ms']}U, {target['yaw_tenths']}, "
+            f"{target['pitch_tenths']}"
+            "},"
+        )
+    lines.extend(["}};", ""])
+    return "\n".join(lines).encode("utf-8")
+
+
+def _target_q5_build_layout(checkout: Path) -> dict[str, Path]:
+    project_root = checkout / "firmware/sanhuo-stackchan-idf"
+    return {
+        "project_root": project_root,
+        "payload_root": Path(
+            "tools/motion_firmware_matrix/payloads/P2-H1A/src"
+        ),
+        "source": Path(
+            "tests/host/motion_matrix/phase2c_p2_screen_executor.cpp"
+        ),
+    }
+
+
+_TARGET_P2_TRACE = re.compile(
+    rb"^PHASE2C_P2_RUN candidate=MF-P2-H1A seed=(\d+) repeat=(\d+) "
+    rb"mode=(healthy|fault) failure_index=(-?\d+) targets_dispatched=(\d+) "
+    rb"targets_after_failure=(\d+) safe_center_attempts=(\d+) "
+    rb"automatic_retries=(\d+) maximum_lateness_ms=(\d+) "
+    rb"virtual_end_ms=(\d+) trace=([0-9a-f]{16})$"
+)
+
+
+def _validate_target_p2_trace(stdout: bytes) -> dict[str, object]:
+    lines = stdout.splitlines()
+    if len(lines) != 400 or not stdout.endswith(b"\n"):
+        raise RuntimeError("target P2 Q5 trace run count drift")
+    signatures: dict[tuple[int, bytes], tuple[object, ...]] = {}
+    failure_indices: set[int] = set()
+    maximum_lateness = 0
+    for line_index, line in enumerate(lines):
+        matched = _TARGET_P2_TRACE.fullmatch(line)
+        if matched is None:
+            raise RuntimeError("target P2 Q5 trace format drift")
+        (
+            seed_text,
+            repeat_text,
+            mode,
+            failure_text,
+            dispatched_text,
+            after_text,
+            center_text,
+            retry_text,
+            lateness_text,
+            virtual_text,
+            trace_text,
+        ) = matched.groups()
+        seed = int(seed_text)
+        repeat = int(repeat_text)
+        failure_index = int(failure_text)
+        dispatched = int(dispatched_text)
+        after_failure = int(after_text)
+        center_attempts = int(center_text)
+        retries = int(retry_text)
+        lateness = int(lateness_text)
+        virtual_end = int(virtual_text)
+        expected_mode = b"healthy" if line_index % 2 == 0 else b"fault"
+        if (
+            seed != line_index // 4
+            or repeat != (line_index // 2) % 2
+            or mode != expected_mode
+            or after_failure != 0
+            or center_attempts != 1
+            or retries != 0
+        ):
+            raise RuntimeError("target P2 Q5 trace ordering or safety drift")
+        if mode == b"healthy":
+            if failure_index != -1 or dispatched != 20 or virtual_end < 20_000:
+                raise RuntimeError("target P2 Q5 healthy trace drift")
+        else:
+            if not 0 <= failure_index < 20 or dispatched != failure_index + 1:
+                raise RuntimeError("target P2 Q5 fault trace drift")
+            failure_indices.add(failure_index)
+        signature = (
+            failure_index,
+            dispatched,
+            after_failure,
+            center_attempts,
+            retries,
+            lateness,
+            virtual_end,
+            trace_text.decode("ascii"),
+        )
+        key = (seed, mode)
+        if key in signatures and signatures[key] != signature:
+            raise RuntimeError("target P2 Q5 repeat is nondeterministic")
+        signatures.setdefault(key, signature)
+        maximum_lateness = max(maximum_lateness, lateness)
+    if failure_indices != set(range(20)):
+        raise RuntimeError("target P2 Q5 failure coverage drift")
+    return {
+        "healthy_runs": 200,
+        "fault_runs": 200,
+        "failure_indices_covered": list(range(20)),
+        "post_failure_targets": 0,
+        "safe_center_attempts_maximum": 1,
+        "maximum_lateness_ms": maximum_lateness,
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+    }
+
+
+def _p2_q5_report(report: dict[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+    if (
+        set(report)
+        != {
+            "schema",
+            "candidate_id",
+            "gate",
+            "status",
+            "evidence",
+            "evidence_sha256",
+            "covered",
+            "not_covered",
+        }
+        or report.get("schema") != "sanhuo.motion_phase2c_p2_gate_report.v1"
+        or report.get("candidate_id") != "MF-P2-H1A"
+        or report.get("gate") != "Q5"
+        or report.get("status") != "passed"
+    ):
+        raise RuntimeError("target P2 Q5 report identity drift")
+    evidence = report.get("evidence")
+    if type(evidence) is not dict or report.get("evidence_sha256") != _sha256_json(
+        evidence
+    ):
+        raise RuntimeError("target P2 Q5 evidence hash drift")
+    host = evidence.get("host_executor")
+    if type(host) is not dict:
+        raise RuntimeError("target P2 Q5 host identity is missing")
+    for field in (
+        "harness_source_sha256",
+        "executor_core_sha256",
+        "observer_core_sha256",
+        "generated_targets_sha256",
+        "compiler_sha256",
+        "executable_sha256",
+    ):
+        _sha256_field(host.get(field), label=f"target P2 Q5 {field}")
+    return evidence, host
+
+
+def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
+    """Run a verifier-owned P2 harness, then reproduce the target Q5 harness."""
+
+    checkout = Path(os.environ["SANHUO_Q7_CHECKOUT"])
+    layout = _target_q5_build_layout(checkout)
+    project_root = layout["project_root"]
+    payload_root = project_root / layout["payload_root"]
+    target_harness = project_root / layout["source"]
+    executor_core = payload_root / "phase2c_p2_executor.h"
+    observer_core = payload_root / "phase2c_p2_observer_core.h"
+    for path, label in (
+        (target_harness, "target P2 Q5 harness"),
+        (executor_core, "target P2 executor core"),
+        (observer_core, "target P2 observer core"),
+    ):
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(f"{label} is missing or indirect")
+    if _trusted_targets_sha256() != TRUSTED_TARGETS_SHA256:
+        raise RuntimeError("trusted P2 target list drift")
+    header = _render_p2_targets_header()
+    header_sha256 = hashlib.sha256(header).hexdigest()
+    if header_sha256 != "fc8cef85af58ab7b7c5728b8a8a2f08e7cc86a8572aadd2e70bacf830c1c747c":
+        raise RuntimeError("trusted P2 generated target header drift")
+
+    sealed_root = Path(os.environ["SANHUO_Q7_SEALED_INPUT"])
+    q3 = _load_q5_json(
+        sealed_root / "output/artifacts/MF-P2-H1A/q3-report.json",
+        label="sealed P2 Q3 report",
+    )
+    q5 = _load_q5_json(
+        sealed_root / "output/artifacts/MF-P2-H1A/q5-report.json",
+        label="sealed P2 Q5 report",
+    )
+    q3_evidence = q3.get("evidence")
+    if (
+        q3.get("schema") != "sanhuo.motion_phase2c_p2_gate_report.v1"
+        or q3.get("candidate_id") != "MF-P2-H1A"
+        or q3.get("gate") != "Q3"
+        or q3.get("status") != "passed"
+        or type(q3_evidence) is not dict
+        or q3.get("evidence_sha256") != _sha256_json(q3_evidence)
+        or q3_evidence.get("targets") != list(TRUSTED_TARGETS)
+        or q3_evidence.get("targets_sha256") != TRUSTED_TARGETS_SHA256
+        or q3_evidence.get("contract_sha256") != TRUSTED_CONTRACT_SHA256
+    ):
+        raise RuntimeError("target P2 Q3 exact target binding drift")
+    target_q5, target_host = _p2_q5_report(q5)
+
+    scratch = Path(os.environ["SANHUO_Q7_RUNTIME_HOME"]) / "tmp"
+    host_cxx = Path(os.environ["SANHUO_Q7_HOST_CXX"])
+    if not host_cxx.is_absolute() or not host_cxx.is_file() or host_cxx.is_symlink():
+        raise RuntimeError("trusted P2 Q5 compiler is missing or indirect")
+    compiler_sha256 = hashlib.sha256(host_cxx.read_bytes()).hexdigest()
+    source_hashes = {
+        "executor_core_sha256": hashlib.sha256(executor_core.read_bytes()).hexdigest(),
+        "observer_core_sha256": hashlib.sha256(observer_core.read_bytes()).hexdigest(),
+        "harness_source_sha256": hashlib.sha256(target_harness.read_bytes()).hexdigest(),
+    }
+    if (
+        target_host.get("compiler_sha256") != compiler_sha256
+        or target_host.get("generated_targets_sha256") != header_sha256
+        or any(target_host.get(field) != value for field, value in source_hashes.items())
+    ):
+        raise RuntimeError("target P2 Q5 source identity drift")
+
+    trusted_root = scratch / "trusted-q5-MF-P2-H1A"
+    if trusted_root.exists() or trusted_root.is_symlink():
+        raise RuntimeError("trusted P2 Q5 scratch already exists")
+    trusted_root.mkdir(mode=0o700)
+    trusted_source = trusted_root / "trusted_phase2c_p2_q5.cpp"
+    trusted_executable = trusted_root / "trusted-phase2c-p2-q5"
+    trusted_source.write_text(TRUSTED_Q5_HARNESS_SOURCE, encoding="utf-8")
+    _compile_q5_harness(
+        host_cxx=host_cxx,
+        payload_root=payload_root,
+        include_root=trusted_root,
+        source=trusted_source,
+        executable=trusted_executable,
+        cwd=trusted_root,
+    )
+    trusted_stdout = _run_checked(
+        [str(trusted_executable)], cwd=trusted_root, timeout=120
+    )
+    matched = _TRUSTED_Q5_OUTPUT.fullmatch(trusted_stdout)
+    if matched is None or [int(value) for value in matched.groups()] != [
+        200,
+        200,
+        (1 << 20) - 1,
+        0,
+        1,
+    ]:
+        raise RuntimeError("trusted P2 Q5 semantics drift")
+    trusted_evidence = {
+        "trusted_harness_source_sha256": hashlib.sha256(
+            trusted_source.read_bytes()
+        ).hexdigest(),
+        "trusted_executable_sha256": hashlib.sha256(
+            trusted_executable.read_bytes()
+        ).hexdigest(),
+        "trusted_stdout_sha256": hashlib.sha256(trusted_stdout).hexdigest(),
+    }
+
+    target_root = scratch / "target-q5-rebuild-MF-P2-H1A"
+    if target_root.exists() or target_root.is_symlink():
+        raise RuntimeError("target P2 Q5 rebuild scratch already exists")
+    target_root.mkdir(mode=0o700)
+    (target_root / "motion_matrix_public_targets.h").write_bytes(header)
+    target_executable = target_root / "phase2c-p2-screen-executor"
+    _compile_q5_harness(
+        host_cxx=host_cxx,
+        payload_root=payload_root,
+        include_root=target_root,
+        source=target_harness,
+        executable=target_executable,
+        cwd=project_root,
+    )
+    target_executable_sha256 = hashlib.sha256(
+        target_executable.read_bytes()
+    ).hexdigest()
+    if target_executable_sha256 != target_host.get("executable_sha256"):
+        raise RuntimeError("target P2 Q5 executable rebuild drift")
+    target_stdout = _run_checked(
+        [str(target_executable)], cwd=target_root, timeout=120
+    )
+    trace = _validate_target_p2_trace(target_stdout)
+    if (
+        trace["stdout_sha256"] != target_q5.get("all_seed_traces_sha256")
+        or trace["maximum_lateness_ms"] != target_q5.get("maximum_lateness_ms")
+        or target_q5.get("healthy_runs") != 200
+        or target_q5.get("fault_runs") != 200
+        or target_q5.get("failure_indices_covered") != list(range(20))
+        or target_q5.get("post_failure_targets") != 0
+        or target_q5.get("safe_center_attempts_maximum") != 1
+        or target_q5.get("automatic_retry") is not False
+        or target_q5.get("automatic_reset") is not False
+        or target_q5.get("deterministic") is not True
+        or target_q5.get("hardware_used") is not False
+        or target_q5.get("target_count") != 20
+        or target_q5.get("virtual_clock_duration_ms") != 20_000
+    ):
+        raise RuntimeError("target P2 Q5 summary disagrees with reproduced trace")
+    return {
+        "MF-P2-H1A": {
+            "candidate_id": "MF-P2-H1A",
+            "targets_sha256": TRUSTED_TARGETS_SHA256,
+            "contract_sha256": TRUSTED_CONTRACT_SHA256,
+            "healthy_runs": 200,
+            "fault_runs": 200,
+            "failure_indices_covered": list(range(20)),
+            "post_failure_targets": 0,
+            "safe_center_attempts_maximum": 1,
+            "target_trace_sha256": trace["stdout_sha256"],
+            "target_executable_sha256": target_executable_sha256,
+            "compiler_sha256": compiler_sha256,
+            **source_hashes,
+            **trusted_evidence,
+        }
+    }
 
 
 def main() -> int:

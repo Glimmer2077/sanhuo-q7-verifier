@@ -1087,7 +1087,7 @@ class TrustedVerifierTests(unittest.TestCase):
             ),
             lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
-            candidate="MF-T0-H1A",
+            candidate="MF-P2-H1A",
             action="build",
         )
 
@@ -1108,15 +1108,15 @@ class TrustedVerifierTests(unittest.TestCase):
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-T0-H1A",
+            "ACTION_ARTIFACT_ROOT=/private/tmp/output/artifacts/MF-P2-H1A",
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_BINARY_ROOT=/private/tmp/output/binaries/MF-T0-H1A",
+            "ACTION_BINARY_ROOT=/private/tmp/output/binaries/MF-P2-H1A",
             " ".join(command),
         )
         self.assertIn(
-            "ACTION_OUTPUT_00=/private/tmp/output/artifacts/MF-T0-H1A/build-report.json",
+            "ACTION_OUTPUT_00=/private/tmp/output/artifacts/MF-P2-H1A/build-report.json",
             " ".join(command),
         )
         self.assertIn(
@@ -1162,7 +1162,7 @@ class TrustedVerifierTests(unittest.TestCase):
             ),
             lifecycle_token="com.sanhuo.q7.0123456789abcdef0123456789abcdef",
             driver_mode="action",
-            candidate="MF-T0-H1A",
+            candidate="MF-P2-H1A",
             action="qualify",
         )
         self.assertIn(
@@ -1175,7 +1175,7 @@ class TrustedVerifierTests(unittest.TestCase):
             *(f"q{index}-report.json" for index in range(7)),
         ):
             self.assertIn(
-                f"/private/tmp/output/artifacts/MF-T0-H1A/{filename}",
+                f"/private/tmp/output/artifacts/MF-P2-H1A/{filename}",
                 " ".join(qualify_command),
             )
 
@@ -1259,9 +1259,9 @@ class TrustedVerifierTests(unittest.TestCase):
             for path in paths.values():
                 path.mkdir()
             (paths["runtime"] / "tmp").mkdir()
-            action_artifacts = paths["output"] / "artifacts/MF-T0-H1A"
-            action_binaries = paths["output"] / "binaries/MF-T0-H1A"
-            prior_artifacts = paths["output"] / "artifacts/MF-T1-H1A"
+            action_artifacts = paths["output"] / "artifacts/MF-P2-H1A"
+            action_binaries = paths["output"] / "binaries/MF-P2-H1A"
+            prior_artifacts = paths["output"] / "artifacts/prior-candidate"
             action_artifacts.mkdir(parents=True)
             action_binaries.mkdir(parents=True)
             prior_artifacts.mkdir(parents=True)
@@ -1502,16 +1502,15 @@ class TrustedVerifierTests(unittest.TestCase):
                 ),
             )
 
-    def test_only_the_three_fixed_phase2c_candidates_are_run(self) -> None:
+    def test_only_the_fixed_phase2c_p2_candidate_is_run(self) -> None:
         self.assertEqual(
             verifier.CANDIDATES,
-            ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A"),
+            ("MF-P2-H1A",),
         )
         self.assertEqual(
             verifier.TARGET_REQUIRED_COMMITS,
             (
                 "8ae75f9a4082094784ac4b8f466d1466dd5ab5f2",
-                "e9b8675944742cb729883ca767f5a5a98b773954",
             ),
         )
         self.assertEqual(
@@ -1522,6 +1521,252 @@ class TrustedVerifierTests(unittest.TestCase):
                 for action in ("build", "qualify", "audit")
             ],
         )
+
+    def test_p2_source_diff_rejects_an_allowed_file_drift(self) -> None:
+        source_diff = {
+            "passed": True,
+            "audit_sha256": verifier.P2_SOURCE_DIFF_SHA256,
+            "baseline_file_count": 519,
+            "materialized_file_count": 523,
+            "allowed_changed_files": list(verifier.P2_CHANGED_SOURCE_HASHES),
+            "changed_file_sha256": dict(verifier.P2_CHANGED_SOURCE_HASHES),
+            "protected_source_hashes": {
+                name: "a" * 64
+                for name in (
+                    "lib/M5GFX",
+                    "lib/M5Unified",
+                    "lib/StackChanBSP/src/drivers",
+                    "lib/StackChanBSP/src/utils",
+                )
+            },
+        }
+        verifier._validate_p2_source_diff(source_diff)
+
+        tampered = copy.deepcopy(source_diff)
+        tampered["allowed_changed_files"].append("src/unreviewed.cpp")
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "source diff audit drift",
+        ):
+            verifier._validate_p2_source_diff(tampered)
+
+    def test_p2_q3_rejects_a_single_target_mutation(self) -> None:
+        evidence = {
+            "contract_sha256": verifier.P2_CONTRACT_SHA256,
+            "targets_sha256": verifier.P2_TARGETS_SHA256,
+            "targets": copy.deepcopy(verifier.P2_TARGETS),
+            "known_reversal": [copy.deepcopy(verifier.P2_TARGETS[13])],
+            "metrics": {
+                "target_count": 20,
+                "last_target_at_ms": 19_380,
+                "contains_orbit_reversal": True,
+            },
+            "parameters": {
+                "platform": "arduino-stackchan",
+                "execution_backend_id": "official-stackchan-bsp-1.1.0",
+                "official_ack_semantics": True,
+                "official_spring": True,
+                "runtime_override": False,
+                "motion_tick_ms": 20,
+                "target_speed": 500,
+            },
+        }
+        verifier._validate_p2_gate_semantics(
+            gate="Q3",
+            evidence=evidence,
+            build={"reproducibility": {}},
+            trusted_elf={},
+            trusted_q0={},
+            trusted_q5={},
+        )
+
+        tampered = copy.deepcopy(evidence)
+        tampered["targets"][13]["yaw_tenths"] = 349
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "exact target contract drift",
+        ):
+            verifier._validate_p2_gate_semantics(
+                gate="Q3",
+                evidence=tampered,
+                build={"reproducibility": {}},
+                trusted_elf={},
+                trusted_q0={},
+                trusted_q5={},
+            )
+
+    def test_p2_manifests_reject_hardware_authority_or_extra_fields(self) -> None:
+        parent_evidence = {
+            "toolchain_lock_sha256": "a" * 64,
+            "source_sha256": "b" * 64,
+        }
+        tracked = {
+            "schema": "sanhuo.motion_phase2c_p2_screen_candidate.v1",
+            "candidate_id": "MF-P2-H1A",
+            "parent_candidate_id": "MF-P2",
+            "state": "screen_design",
+            "scenario": "h0_plus_h1a_20s",
+            "duration_ms": 20_000,
+            "parent_manifest_sha256": "c" * 64,
+            "screen_contract": {
+                "sha256": verifier.P2_CONTRACT_SHA256,
+                "targets_sha256": verifier.P2_TARGETS_SHA256,
+                "targets": 20,
+                "contains_orbit_reversal": True,
+            },
+            "builds": {
+                "status": "not_run",
+                "clean_builds": 0,
+                "reproducible": None,
+                "report_sha256": None,
+            },
+            "gate_results": {f"Q{index}": "not_run" for index in range(8)},
+            "known_limits": [
+                "P2 screen is not yet double-built or Q0-Q7 qualified",
+                "P2 changes platform, ACK semantics, and motion algorithm together",
+                "H1A cannot prove 60-second or full-system stability",
+            ],
+            "offline_qualified": False,
+            "hardware_state": copy.deepcopy(verifier.P2_HARDWARE_STATE),
+        }
+        runtime = {
+            "schema": "sanhuo.motion_phase2c_p2_candidate_runtime.v1",
+            "candidate_id": "MF-P2-H1A",
+            "parent_candidate_id": "MF-P2",
+            "state": "research_only",
+            "scenario": "h0_plus_h1a_20s",
+            "duration_ms": 20_000,
+            "parent_manifest_sha256": "c" * 64,
+            "parent_evidence": copy.deepcopy(parent_evidence),
+            "screen_contract": copy.deepcopy(tracked["screen_contract"]),
+            "toolchain_lock_sha256": "a" * 64,
+            "source_sha256": "d" * 64,
+            "firmware": {},
+            "elf": {},
+            "resources": {},
+            "firmware_capabilities": {},
+            "build_tool_capabilities": copy.deepcopy(
+                verifier.P2_BUILD_TOOL_CAPABILITIES
+            ),
+            "builds": {},
+            "gate_results": {},
+            "known_limits": [
+                "Q7 independent MF-P2-H1A review is still blocked",
+                "P2 changes platform, ACK semantics, and motion algorithm together",
+                "H1A cannot prove 60-second or full-system stability",
+            ],
+            "offline_qualified": False,
+            "hardware_state": copy.deepcopy(verifier.P2_HARDWARE_STATE),
+        }
+        verifier._validate_p2_manifests(
+            tracked=tracked,
+            runtime=runtime,
+            parent_manifest_sha256="c" * 64,
+            parent_evidence=parent_evidence,
+        )
+
+        authorized = copy.deepcopy(runtime)
+        authorized["hardware_state"]["authorized"] = True
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "runtime manifest crossed",
+        ):
+            verifier._validate_p2_manifests(
+                tracked=tracked,
+                runtime=authorized,
+                parent_manifest_sha256="c" * 64,
+                parent_evidence=parent_evidence,
+            )
+
+        extra = copy.deepcopy(runtime)
+        extra["unreviewed"] = True
+        with self.assertRaisesRegex(
+            verifier.VerificationError,
+            "runtime manifest crossed",
+        ):
+            verifier._validate_p2_manifests(
+                tracked=tracked,
+                runtime=extra,
+                parent_manifest_sha256="c" * 64,
+                parent_evidence=parent_evidence,
+            )
+
+    def test_p2_precheck_rejects_hardware_authority(self) -> None:
+        gate_reports = {}
+        manifest_gates = {}
+        audit_gates = {}
+        summary_gates = {}
+        for index, gate in enumerate(verifier.GATES):
+            evidence = {"gate": gate, "index": index}
+            evidence_sha = verifier.sha256_json(evidence)
+            gate_reports[gate] = {
+                "schema": "sanhuo.motion_phase2c_p2_gate_report.v1",
+                "candidate_id": "MF-P2-H1A",
+                "gate": gate,
+                "status": "passed",
+                "evidence": evidence,
+                "evidence_sha256": evidence_sha,
+                "covered": ["fixed P2 evidence"],
+                "not_covered": [],
+            }
+            manifest_gates[gate] = {
+                "status": "passed",
+                "report_sha256": evidence_sha,
+            }
+            audit_gates[gate] = evidence_sha
+            summary_gates[gate] = copy.deepcopy(manifest_gates[gate])
+        manifest_gates["Q7"] = {"status": "blocked", "report_sha256": None}
+        summary_gates["Q7"] = {
+            "status": "blocked",
+            "report_sha256": None,
+            "reason": "independent MF-P2-H1A review credential is absent",
+        }
+        summary = {
+            "schema": "sanhuo.motion_phase2c_p2_qualification_summary.v1",
+            "candidate_id": "MF-P2-H1A",
+            "precheck_status": "passed",
+            "gate_results": summary_gates,
+            "known_risks": [
+                "P2 changes platform, ACK semantics, and motion algorithm together",
+                "offline H1A evidence is not hardware or 60-second qualification",
+            ],
+            "offline_qualified": False,
+            "hardware_test_eligible": False,
+            "flashable": False,
+            "hardware_authorized": False,
+            "hardware_commands": [],
+        }
+        arguments = {
+            "gate_reports": gate_reports,
+            "summary": summary,
+            "manifest_gates": manifest_gates,
+            "audit_gates": audit_gates,
+            "build": {},
+            "trusted_elf": {},
+            "trusted_q0": {},
+            "trusted_q5": {},
+        }
+        with mock.patch.object(
+            verifier,
+            "_validate_p2_gate_semantics",
+            return_value={"validated": True},
+        ):
+            verifier._validate_p2_precheck(**arguments)
+
+        authorized = copy.deepcopy(summary)
+        authorized["hardware_authorized"] = True
+        with mock.patch.object(
+            verifier,
+            "_validate_p2_gate_semantics",
+            return_value={"validated": True},
+        ):
+            with self.assertRaisesRegex(
+                verifier.VerificationError,
+                "qualification summary is invalid",
+            ):
+                verifier._validate_p2_precheck(
+                    **{**arguments, "summary": authorized}
+                )
 
     def test_sealed_snapshot_is_independent_from_abandoned_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1816,8 +2061,8 @@ class TrustedVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "output"
-            artifacts = output / "artifacts/MF-T0-H1A"
-            binaries = output / "binaries/MF-T0-H1A"
+            artifacts = output / "artifacts/MF-P2-H1A"
+            binaries = output / "binaries/MF-P2-H1A"
             run_tree = artifacts / "run-12345"
             run_tree.mkdir(parents=True)
             binaries.mkdir(parents=True)
@@ -1833,23 +2078,23 @@ class TrustedVerifierTests(unittest.TestCase):
             verifier._snapshot_persistent_matrix_output(output, sealed)
 
             self.assertFalse(
-                (sealed / "artifacts/MF-T0-H1A/run-12345").exists()
+                (sealed / "artifacts/MF-P2-H1A/run-12345").exists()
             )
             self.assertTrue(
-                (sealed / "artifacts/MF-T0-H1A/build-report.json").is_file()
+                (sealed / "artifacts/MF-P2-H1A/build-report.json").is_file()
             )
             self.assertEqual(
-                (sealed / "binaries/MF-T0-H1A/firmware.elf").read_bytes(),
+                (sealed / "binaries/MF-P2-H1A/firmware.elf").read_bytes(),
                 b"elf",
             )
 
     def test_trusted_action_delta_rejects_cross_stage_changes(self) -> None:
         build_files = {
-            path.format(candidate="MF-T0-H1A"): "a" * 64
+            path.format(candidate="MF-P2-H1A"): "a" * 64
             for path in verifier.ACTION_ADDED_FILES["build"]
         }
         receipt = verifier._validate_action_delta(
-            candidate="MF-T0-H1A",
+            candidate="MF-P2-H1A",
             action="build",
             before={},
             after=build_files,
@@ -1857,30 +2102,30 @@ class TrustedVerifierTests(unittest.TestCase):
         self.assertEqual(receipt["added_files"], sorted(build_files))
 
         unexpected = dict(build_files)
-        unexpected["artifacts/MF-T0-H1A/q0-report.json"] = "b" * 64
+        unexpected["artifacts/MF-P2-H1A/q0-report.json"] = "b" * 64
         with self.assertRaisesRegex(
             verifier.VerificationError,
             "file delta drift",
         ):
             verifier._validate_action_delta(
-                candidate="MF-T0-H1A",
+                candidate="MF-P2-H1A",
                 action="build",
                 before={},
                 after=unexpected,
             )
 
         qualify_files = {
-            path.format(candidate="MF-T0-H1A"): "c" * 64
+            path.format(candidate="MF-P2-H1A"): "c" * 64
             for path in verifier.ACTION_ADDED_FILES["qualify"]
         }
         tampered_before = dict(build_files)
-        tampered_before["artifacts/MF-T0-H1A/build-report.json"] = "d" * 64
+        tampered_before["artifacts/MF-P2-H1A/build-report.json"] = "d" * 64
         with self.assertRaisesRegex(
             verifier.VerificationError,
             "changed prior persistent evidence",
         ):
             verifier._validate_action_delta(
-                candidate="MF-T0-H1A",
+                candidate="MF-P2-H1A",
                 action="qualify",
                 before=build_files,
                 after={**tampered_before, **qualify_files},
@@ -2099,7 +2344,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "primary": self.approved_report("primary"),
             "verifier": self.approved_report("verifier"),
         }
-        reports["verifier"]["candidates"]["MF-T2-H1A"]["elf_sha256"] = "f" * 64
+        reports["verifier"]["candidates"]["MF-P2-H1A"]["elf_sha256"] = "f" * 64
 
         with self.assertRaisesRegex(
             verifier.VerificationError,

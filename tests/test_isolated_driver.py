@@ -12,59 +12,43 @@ import isolated_driver
 
 
 class IsolatedDriverTests(unittest.TestCase):
-    def test_phase2c_h1a_profile_is_fixed(self) -> None:
+    def test_phase2c_p2_h1a_profile_is_fixed(self) -> None:
         self.assertEqual(
             isolated_driver.CANDIDATES,
-            ("MF-T0-H1A", "MF-T1-H1A", "MF-T2-H1A"),
+            ("MF-P2-H1A",),
         )
-        self.assertEqual(isolated_driver.CLI.name, "cli_phase2c.py")
+        self.assertEqual(isolated_driver.CLI.name, "cli_phase2c_p2.py")
 
     def test_driver_uses_fixed_actions_without_shell(self) -> None:
         commands = isolated_driver.matrix_commands()
 
-        self.assertEqual(len(commands), 9)
+        self.assertEqual(len(commands), 3)
         self.assertEqual(
-            commands[0][-3:],
-            ["build", "--candidate", "MF-T0-H1A"],
+            commands[0][-1:],
+            ["build"],
         )
         self.assertEqual(
-            commands[-1][-3:],
-            ["audit", "--candidate", "MF-T2-H1A"],
+            commands[-1][-1:],
+            ["audit"],
         )
         self.assertTrue(all(isinstance(command, list) for command in commands))
         self.assertTrue(all("sh" not in command[:1] for command in commands))
 
-    def test_trusted_q5_harness_executes_exact_generated_schedule(self) -> None:
+    def test_trusted_q5_harness_executes_fixed_p2_runtime_core(self) -> None:
         source = isolated_driver.TRUSTED_Q5_HARNESS_SOURCE
 
-        self.assertIn('#include "motion_matrix_generated_schedule.h"', source)
-        self.assertIn('#include "phase2c_screen_executor.h"', source)
-        self.assertIn("screen::executeScreen(", source)
-        self.assertIn("kGeneratedCommands", source)
-        self.assertIn("command.servo_id", source)
-        self.assertIn("command.raw", source)
-        self.assertIn("command.move_time_ms", source)
-        self.assertIn("command.speed", source)
-        self.assertIn("post_failure_performance_writes", source)
-        self.assertNotIn("std::strtoul", source)
-        self.assertNotIn("index * 20U", source)
-        self.assertNotIn("phase2c_screen_executor.cpp", source)
+        self.assertIn('#include "phase2c_p2_executor.h"', source)
+        self.assertIn('#include "phase2c_p2_observer_core.h"', source)
+        self.assertIn("kTrustedTargets", source)
+        self.assertIn("p2::executeScreen(", source)
+        self.assertIn("failure_indices_covered", source)
+        self.assertIn("post_failure_targets", source)
+        self.assertNotIn("phase2c_p2_screen_executor.cpp", source)
 
-    def test_exact_schedule_digest_changes_with_command_values(self) -> None:
-        command = {
-            "at_ms": 17_100,
-            "axis": "tilt",
-            "raw": 512,
-            "move_time_ms": 20,
-            "speed": 0,
-            "source_at_ms": 17_100,
-        }
-        changed = dict(command)
-        changed["raw"] = 513
-
-        self.assertNotEqual(
-            isolated_driver._exact_schedule_digest([command]),
-            isolated_driver._exact_schedule_digest([changed]),
+    def test_trusted_p2_targets_digest_is_fixed(self) -> None:
+        self.assertEqual(
+            isolated_driver._trusted_targets_sha256(),
+            "db843ff1200e942ce50b12178a897478dead0a07fe4aaca4fcd7691c4bfb1e58",
         )
 
     def test_trusted_result_is_captured_before_target_harness_runs(self) -> None:
@@ -73,11 +57,11 @@ class IsolatedDriverTests(unittest.TestCase):
         )
 
         self.assertLess(
-            source.index("trusted_stdout_sha256 ="),
+            source.index("trusted_evidence ="),
             source.index("target_stdout = _run_checked("),
         )
         self.assertLess(
-            source.index("target_executable_sha256 ="),
+            source.index("trusted_executable.read_bytes()"),
             source.index("target_stdout = _run_checked("),
         )
 
@@ -93,11 +77,11 @@ class IsolatedDriverTests(unittest.TestCase):
         )
         self.assertEqual(
             layout["payload_root"],
-            Path("tools/motion_firmware_matrix/payloads/PT"),
+            Path("tools/motion_firmware_matrix/payloads/P2-H1A/src"),
         )
         self.assertEqual(
             layout["source"],
-            Path("tests/host/motion_matrix/phase2c_screen_executor.cpp"),
+            Path("tests/host/motion_matrix/phase2c_p2_screen_executor.cpp"),
         )
 
     def test_relative_q5_compile_is_stable_across_checkout_paths(self) -> None:
@@ -156,27 +140,28 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_trusted_capability_derivation_rejects_missing_motion(self) -> None:
-        screen_symbols = {
+        p2_symbols = {
             "uart_write_bytes",
-            "usb_serial_jtag_read_bytes",
-            "sendStrict",
-            "attemptSafeCenter",
+            "M5StackChan_Class::begin()",
+            "Motion::move(int, int, int)",
+            "SCSCL::WritePos(unsigned char, unsigned short, unsigned short, unsigned char)",
             "waitForArm",
             "runH0",
+            "M5StackChan_Class::getBatteryVoltage()",
         }
 
         capabilities = isolated_driver.derive_capabilities(
-            "MF-T0-H1A",
-            screen_symbols,
+            "MF-P2-H1A",
+            p2_symbols,
         )
 
         self.assertTrue(capabilities["motion"])
         self.assertTrue(capabilities["uart"])
-        self.assertFalse(capabilities["ina226"])
-        self.assertTrue(capabilities["usb"])
+        self.assertTrue(capabilities["ina226"])
+        self.assertFalse(capabilities["usb"])
         with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
             isolated_driver.derive_capabilities(
-                "MF-T1-H1A",
+                "MF-P2-H1A",
                 {"uart_write_bytes", "executeCandidate()"},
             )
 
