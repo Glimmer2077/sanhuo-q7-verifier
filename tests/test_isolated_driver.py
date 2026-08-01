@@ -274,6 +274,40 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertNotIn("shell=True", source)
         self.assertNotIn("/dev/", source)
 
+    def test_fixed_p2_diagnostic_extracts_error_signal(self) -> None:
+        process = mock.Mock()
+        process.communicate.return_value = (
+            b"header\nE   PermissionError: denied source archive\nsummary\n",
+            b"",
+        )
+        process.returncode = 1
+        environment = {
+            "SANHUO_Q7_TEST_USER_SITE_ROOT": "/tmp/site",
+            "SANHUO_Q7_TEST_PYTHON": "/tmp/python",
+        }
+        with (
+            mock.patch.dict(os.environ, environment, clear=False),
+            mock.patch.object(
+                isolated_driver,
+                "_closed_environment",
+                return_value={},
+            ),
+            mock.patch.object(
+                isolated_driver.subprocess,
+                "Popen",
+                return_value=process,
+            ),
+        ):
+            detail = isolated_driver._p2_qualify_failure_diagnostic()
+
+        match = re.search(r"fixed_pytest_signal_hex=([0-9a-f]+)", detail)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(
+            bytes.fromhex(match.group(1)),
+            b"E   PermissionError: denied source archive",
+        )
+
     def test_q5_json_rejects_duplicates_and_oversize(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

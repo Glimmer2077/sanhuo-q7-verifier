@@ -790,10 +790,19 @@ def _p2_qualify_failure_diagnostic() -> str:
         return "fixed_pytest_diagnostic=timeout"
     excerpt = 320
     combined = stdout + stderr
+    signal_lines = [
+        line
+        for line in combined.splitlines()
+        if line.lstrip().startswith(b"E ")
+        or b"error" in line.lower()
+        or b"exception" in line.lower()
+    ]
+    failure_signal = b"\n".join(signal_lines)[-600:]
     return (
         f"fixed_pytest_returncode={process.returncode}; "
         f"fixed_pytest_head_hex={combined[:excerpt].hex()}; "
-        f"fixed_pytest_tail_hex={combined[-excerpt:].hex()}"
+        f"fixed_pytest_tail_hex={combined[-excerpt:].hex()}; "
+        f"fixed_pytest_signal_hex={failure_signal.hex()}"
     )
 
 
