@@ -146,8 +146,10 @@ class IsolatedDriverTests(unittest.TestCase):
             "M5StackChan_Class::begin()",
             "Motion::move(int, int, int)",
             "SCSCL::WritePos(unsigned char, unsigned short, unsigned short, unsigned char)",
-            "waitForArm",
-            "runH0",
+            "OneShotGate::acceptArm(char const*, unsigned int)",
+            "M5StackChan_Class::phase2ReadFeedback(void*, void*)",
+            "phase2AuthorizeWrites(unsigned int)",
+            "runMotion()",
             "M5StackChan_Class::getBatteryVoltage()",
         }
 
@@ -160,6 +162,15 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertTrue(capabilities["uart"])
         self.assertTrue(capabilities["ina226"])
         self.assertFalse(capabilities["usb"])
+        without_arm_gate = set(p2_symbols)
+        without_arm_gate.remove(
+            "OneShotGate::acceptArm(char const*, unsigned int)"
+        )
+        with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
+            isolated_driver.derive_capabilities(
+                "MF-P2-H1A",
+                without_arm_gate,
+            )
         with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
             isolated_driver.derive_capabilities(
                 "MF-P2-H1A",

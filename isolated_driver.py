@@ -556,8 +556,10 @@ def derive_capabilities(
         "M5StackChan_Class::begin",
         "Motion::move(",
         "SCSCL::WritePos",
-        "waitForArm",
-        "runH0",
+        "OneShotGate::acceptArm",
+        "M5StackChan_Class::phase2ReadFeedback",
+        "phase2AuthorizeWrites",
+        "runMotion",
     )
     if not all(
         _symbol_contains(symbols, marker)
