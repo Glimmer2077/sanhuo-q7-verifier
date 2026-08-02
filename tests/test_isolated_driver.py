@@ -40,10 +40,14 @@ class IsolatedDriverTests(unittest.TestCase):
 
         self.assertIn('#include "phase2c_p2_executor.h"', source)
         self.assertIn('#include "phase2c_p2_observer_core.h"', source)
+        self.assertIn('#include "phase2c_p2_serialization.h"', source)
         self.assertIn("kTrustedTargets", source)
         self.assertIn("p2::executeScreen(", source)
         self.assertIn("failure_indices_covered", source)
         self.assertIn("post_failure_targets", source)
+        self.assertIn("unauthorized_performance_writes", source)
+        self.assertIn("p2::runSerializedIfAllowed(", source)
+        self.assertIn("p2::runSerialized(", source)
         self.assertNotIn("phase2c_p2_screen_executor.cpp", source)
 
     def test_trusted_p2_targets_digest_is_fixed(self) -> None:
@@ -145,6 +149,8 @@ class IsolatedDriverTests(unittest.TestCase):
             "uart_write_bytes",
             "M5StackChan_Class::begin()",
             "Motion::move(int, int, int)",
+            "Motion::phase2TryMove(int, int, int)",
+            "Motion::phase2RunExclusive(bool (*)())",
             "SCSCL::WritePos(unsigned char, unsigned short, unsigned short, unsigned char)",
             "OneShotGate::acceptArm(char const*, unsigned int)",
             "M5StackChan_Class::phase2ReadFeedback(void*, void*)",
@@ -170,6 +176,15 @@ class IsolatedDriverTests(unittest.TestCase):
             isolated_driver.derive_capabilities(
                 "MF-P2-H1A",
                 without_arm_gate,
+            )
+        without_serialization = set(p2_symbols)
+        without_serialization.remove(
+            "Motion::phase2RunExclusive(bool (*)())"
+        )
+        with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
+            isolated_driver.derive_capabilities(
+                "MF-P2-H1A",
+                without_serialization,
             )
         with self.assertRaisesRegex(RuntimeError, "motion capability is absent"):
             isolated_driver.derive_capabilities(

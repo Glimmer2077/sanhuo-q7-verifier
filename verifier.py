@@ -4400,7 +4400,7 @@ P2_CONTRACT_SHA256: Final = (
     "3348118754bd19605d51804da783e97ddc9abc26114cb8f53408bd9825f58798"
 )
 P2_SOURCE_DIFF_SHA256: Final = (
-    "ebcbe15e6b7f50fd29a8eb3aaac14292509e7dd6cf38dcec2df7d1f94c2cfe06"
+    "825afabff2348ea6a298ed901f441ef0b96fc1af4c2be06c65233aa375b3db41"
 )
 P2_PARENT_SOURCE_DIFF_SHA256: Final = (
     "55c7bf56969dfdf6afb2c2d5b1f22e5c611022fc808895cb564ba421c2310207"
@@ -4408,6 +4408,8 @@ P2_PARENT_SOURCE_DIFF_SHA256: Final = (
 P2_ALLOWED_CHANGED_FILES: Final = [
     "lib/StackChanBSP/src/M5StackChan.cpp",
     "lib/StackChanBSP/src/M5StackChan.h",
+    "lib/StackChanBSP/src/utils/motion/motion.cpp",
+    "lib/StackChanBSP/src/utils/motion/motion.h",
     "platformio.ini",
     "stackchan-screen.patch",
     "src/main.cpp",
@@ -4416,6 +4418,7 @@ P2_ALLOWED_CHANGED_FILES: Final = [
     "src/phase2_observer.h",
     "src/phase2c_p2_executor.h",
     "src/phase2c_p2_observer_core.h",
+    "src/phase2c_p2_serialization.h",
     "src/phase2c_screen_protocol.h",
 ]
 P2_CHANGED_SOURCE_HASHES: Final = {
@@ -4425,11 +4428,17 @@ P2_CHANGED_SOURCE_HASHES: Final = {
     "lib/StackChanBSP/src/M5StackChan.h": (
         "571c4fdb8e494b27c10fe91ac058ec1301ac57a18623ee6c6630cfeada46adbc"
     ),
+    "lib/StackChanBSP/src/utils/motion/motion.cpp": (
+        "15d2e29dc262d337e45ea48a3b9a8f0ab59427bc04d7b06b8c825192d806086f"
+    ),
+    "lib/StackChanBSP/src/utils/motion/motion.h": (
+        "335f7a759f360e67d040a66a0fb27686f14640abfc6e1ee8a7b48fa10b13a14e"
+    ),
     "platformio.ini": (
         "e53cf1133de43bdc1f2080edf58d448c1960b091421420dc1c07d8dab0910b8d"
     ),
     "src/main.cpp": (
-        "a48b0a741fa0da902c3077cec1c7e995f5bb92929ee009ba09bce6f446e02195"
+        "8358641c91b9b29843fff7ac1f08c242ce6f51846e7d9c6c4931cec40543d982"
     ),
     "src/motion_matrix_public_targets.h": (
         "fc8cef85af58ab7b7c5728b8a8a2f08e7cc86a8572aadd2e70bacf830c1c747c"
@@ -4441,16 +4450,19 @@ P2_CHANGED_SOURCE_HASHES: Final = {
         "c124298f45358d3d043755e39e5be3427179703747b84fec42226a7220e9cc6c"
     ),
     "src/phase2c_p2_executor.h": (
-        "8067633d8aa2eadaf5394c5a08de7401b4e626d6a3b86365d6fcd78dc087fbe1"
+        "8d91882378c84ebc42d30efaf900dd685d1c7a49a34b8637b17cf3e83731ec36"
     ),
     "src/phase2c_p2_observer_core.h": (
-        "9369dd392b6a8b4f85964aca6845f8ed21ba162416b2f255e8479993776e746a"
+        "f4067aae2ca578ecc9f53d595997326a93f888ca40167e4444b28a1c930f67d5"
+    ),
+    "src/phase2c_p2_serialization.h": (
+        "9b47da1ca021f9f7b9f50fbe97e068a89034bd57f500177072b8ab74ee82dd8e"
     ),
     "src/phase2c_screen_protocol.h": (
         "8277387f17ffa83f36546cd4c9ad232d01c5d0508bed9b51e75e9f27bb405915"
     ),
     "stackchan-screen.patch": (
-        "f2d424ec913012d22958bde3fe22519ed42584d65f51b30740c772b18e448172"
+        "132ca34267a56cdf7873e1f37e4e9eff5080299d92a714be8c855612eaaaf75b"
     ),
 }
 
@@ -4476,7 +4488,7 @@ def _validate_p2_source_diff(value: object) -> dict[str, Any]:
         value.get("passed") is True
         and value.get("audit_sha256") == P2_SOURCE_DIFF_SHA256
         and value.get("baseline_file_count") == 519
-        and value.get("materialized_file_count") == 523
+        and value.get("materialized_file_count") == 524
         and value.get("changed_file_sha256") == P2_CHANGED_SOURCE_HASHES
         and value.get("allowed_changed_files") == P2_ALLOWED_CHANGED_FILES,
         "P2 source diff audit drift",
@@ -4489,7 +4501,12 @@ def _validate_p2_source_diff(value: object) -> dict[str, Any]:
             "lib/M5GFX",
             "lib/M5Unified",
             "lib/StackChanBSP/src/drivers",
-            "lib/StackChanBSP/src/utils",
+            "lib/StackChanBSP/src/utils/compat",
+            "lib/StackChanBSP/src/utils/motion/servo.cpp",
+            "lib/StackChanBSP/src/utils/motion/servo.h",
+            "lib/StackChanBSP/src/utils/settings",
+            "lib/StackChanBSP/src/utils/touch_sensor",
+            "lib/StackChanBSP/src/utils/uitk",
         }
         and all(
             SHA256_PATTERN.fullmatch(item) is not None
@@ -4704,6 +4721,8 @@ def _validate_p2_gate_semantics(
             == trusted_q5["executor_core_sha256"]
             and host.get("observer_core_sha256")
             == trusted_q5["observer_core_sha256"]
+            and host.get("serialization_core_sha256")
+            == trusted_q5["serialization_core_sha256"]
             and host.get("harness_source_sha256")
             == trusted_q5["harness_source_sha256"]
             and host.get("generated_targets_sha256")

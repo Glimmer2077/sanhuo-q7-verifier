@@ -381,10 +381,15 @@ TRUSTED_Q5_HARNESS_SOURCE = r'''#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include "phase2c_p2_executor.h"
 #include "phase2c_p2_observer_core.h"
+#include "phase2c_p2_serialization.h"
 
 namespace {
 
@@ -438,6 +443,7 @@ p2::ScreenOutcome run(uint32_t seed, bool inject_failure, Metrics* metrics) {
           metrics->failed = true;
         }
         ++metrics->dispatched;
+        return true;
       },
       [metrics]() { return metrics->failed; },
       [metrics]() {
@@ -465,12 +471,93 @@ void verifyObserver() {
   observer.observeSafeCenterWrite(260U, 2U, 678U, 1, 0U, 0U);
   observer.finishSafeCenter(true);
   assert(observer.snapshot().safe_center_succeeded);
+
+  p2::ObserverCore late_write;
+  late_write.authorizeWrites(100U);
+  assert(late_write.beginFinalCenter());
+  late_write.observeSafeCenterWrite(200U, 1U, 459U, 1, 0U, 0U);
+  late_write.observeSafeCenterWrite(210U, 2U, 678U, 1, 0U, 0U);
+  late_write.finishSafeCenter(true);
+  assert(late_write.snapshot().safe_center_succeeded);
+  late_write.observePerformanceWrite(220U, 1U, 440U, 1, 0U, 0U);
+  assert(late_write.snapshot().unauthorized_performance_writes == 1U);
+  assert(!late_write.snapshot().safe_center_succeeded);
+}
+
+void verifyRejectedDispatch() {
+  std::size_t center_attempts = 0;
+  const auto outcome = p2::executeScreen(
+      kTrustedTargets, 20000U, [](uint32_t) { return true; },
+      [](const Target&) { return false; }, []() { return false; },
+      [&center_attempts]() {
+        ++center_attempts;
+        return true;
+      },
+      [&center_attempts]() {
+        ++center_attempts;
+        return true;
+      });
+  assert(outcome.result == p2::ScreenResult::kMotionFailed);
+  assert(outcome.targets_dispatched == 0U);
+  assert(center_attempts == 1U);
+}
+
+void verifySerializedInterleavings() {
+  std::mutex motion_mutex;
+  std::mutex signal_mutex;
+  std::condition_variable signal;
+  bool contender_ready = false;
+  bool allowed = true;
+  bool installed = false;
+  bool accepted = true;
+
+  std::unique_lock<std::mutex> held(motion_mutex);
+  std::thread contender([&]() {
+    {
+      std::lock_guard<std::mutex> lock(signal_mutex);
+      contender_ready = true;
+    }
+    signal.notify_one();
+    accepted = p2::runSerializedIfAllowed(
+        motion_mutex, [&]() { return allowed; }, [&]() { installed = true; });
+  });
+  {
+    std::unique_lock<std::mutex> lock(signal_mutex);
+    signal.wait(lock, [&]() { return contender_ready; });
+  }
+  allowed = false;
+  held.unlock();
+  contender.join();
+  assert(!accepted && !installed);
+
+  std::vector<int> order;
+  allowed = true;
+  held = std::unique_lock<std::mutex>(motion_mutex);
+  order.push_back(10);
+  bool centered = false;
+  std::thread center([&]() {
+    centered = p2::runSerialized(motion_mutex, [&]() {
+      allowed = false;
+      order.push_back(20);
+      order.push_back(30);
+      return true;
+    });
+  });
+  held.unlock();
+  center.join();
+  assert(centered);
+  assert((order == std::vector<int>{10, 20, 30}));
+  assert(!p2::runSerializedIfAllowed(
+      motion_mutex, [&]() { return allowed; }, [&]() { order.push_back(40); }));
+  assert((order == std::vector<int>{10, 20, 30}));
 }
 
 }  // namespace
 
 int main() {
+  verifyRejectedDispatch();
   verifyObserver();
+  verifySerializedInterleavings();
   std::size_t healthy_runs = 0;
   std::size_t fault_runs = 0;
   uint32_t failure_indices_covered = 0;
@@ -555,6 +642,8 @@ def derive_capabilities(
     required_motion = (
         "M5StackChan_Class::begin",
         "Motion::move(",
+        "Motion::phase2TryMove",
+        "Motion::phase2RunExclusive",
         "SCSCL::WritePos",
         "OneShotGate::acceptArm",
         "M5StackChan_Class::phase2ReadFeedback",
@@ -1228,6 +1317,7 @@ def _compile_q5_harness(
             "-Werror",
             "-fsanitize=address,undefined",
             "-fno-omit-frame-pointer",
+            "-pthread",
             "-I",
             str(include_root),
             "-I",
@@ -1586,6 +1676,7 @@ def _p2_q5_report(report: dict[str, object]) -> tuple[dict[str, object], dict[st
         "harness_source_sha256",
         "executor_core_sha256",
         "observer_core_sha256",
+        "serialization_core_sha256",
         "generated_targets_sha256",
         "compiler_sha256",
         "executable_sha256",
@@ -1604,10 +1695,12 @@ def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
     target_harness = project_root / layout["source"]
     executor_core = payload_root / "phase2c_p2_executor.h"
     observer_core = payload_root / "phase2c_p2_observer_core.h"
+    serialization_core = payload_root / "phase2c_p2_serialization.h"
     for path, label in (
         (target_harness, "target P2 Q5 harness"),
         (executor_core, "target P2 executor core"),
         (observer_core, "target P2 observer core"),
+        (serialization_core, "target P2 serialization core"),
     ):
         if not path.is_file() or path.is_symlink():
             raise RuntimeError(f"{label} is missing or indirect")
@@ -1650,6 +1743,9 @@ def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
     source_hashes = {
         "executor_core_sha256": hashlib.sha256(executor_core.read_bytes()).hexdigest(),
         "observer_core_sha256": hashlib.sha256(observer_core.read_bytes()).hexdigest(),
+        "serialization_core_sha256": hashlib.sha256(
+            serialization_core.read_bytes()
+        ).hexdigest(),
         "harness_source_sha256": hashlib.sha256(target_harness.read_bytes()).hexdigest(),
     }
     if (

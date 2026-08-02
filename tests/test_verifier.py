@@ -1527,7 +1527,7 @@ class TrustedVerifierTests(unittest.TestCase):
             "passed": True,
             "audit_sha256": verifier.P2_SOURCE_DIFF_SHA256,
             "baseline_file_count": 519,
-            "materialized_file_count": 523,
+            "materialized_file_count": 524,
             "allowed_changed_files": list(verifier.P2_ALLOWED_CHANGED_FILES),
             "changed_file_sha256": dict(verifier.P2_CHANGED_SOURCE_HASHES),
             "protected_source_hashes": {
@@ -1536,7 +1536,12 @@ class TrustedVerifierTests(unittest.TestCase):
                     "lib/M5GFX",
                     "lib/M5Unified",
                     "lib/StackChanBSP/src/drivers",
-                    "lib/StackChanBSP/src/utils",
+                    "lib/StackChanBSP/src/utils/compat",
+                    "lib/StackChanBSP/src/utils/motion/servo.cpp",
+                    "lib/StackChanBSP/src/utils/motion/servo.h",
+                    "lib/StackChanBSP/src/utils/settings",
+                    "lib/StackChanBSP/src/utils/touch_sensor",
+                    "lib/StackChanBSP/src/utils/uitk",
                 )
             },
         }
