@@ -378,6 +378,7 @@ TRUSTED_CONTRACT_SHA256 = (
 )
 TRUSTED_Q5_HARNESS_SOURCE = r'''#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -552,12 +553,72 @@ void verifySerializedInterleavings() {
   assert((order == std::vector<int>{10, 20, 30}));
 }
 
+void verifyFailureLatchedWhileFinalCenterWaits() {
+  std::mutex motion_mutex;
+  std::mutex signal_mutex;
+  std::condition_variable signal;
+  bool update_holds_motion_lock = false;
+  bool release_update = false;
+  std::atomic<bool> failure_latched{false};
+  std::size_t center_attempts = 0;
+
+  std::thread update([&]() {
+    std::unique_lock<std::mutex> motion_lock(motion_mutex);
+    {
+      std::lock_guard<std::mutex> lock(signal_mutex);
+      update_holds_motion_lock = true;
+    }
+    signal.notify_one();
+    {
+      std::unique_lock<std::mutex> lock(signal_mutex);
+      signal.wait(lock, [&]() { return release_update; });
+    }
+    failure_latched.store(true);
+  });
+  {
+    std::unique_lock<std::mutex> lock(signal_mutex);
+    signal.wait(lock, [&]() { return update_holds_motion_lock; });
+  }
+
+  const std::vector<Target> no_targets;
+  const auto outcome = p2::executeScreen(
+      no_targets, 20000U, [](uint32_t) { return true; },
+      [](const Target&) { return false; },
+      [&]() {
+        const bool latched = failure_latched.load();
+        if (!latched) {
+          {
+            std::lock_guard<std::mutex> lock(signal_mutex);
+            release_update = true;
+          }
+          signal.notify_one();
+        }
+        return latched;
+      },
+      [&]() {
+        ++center_attempts;
+        return true;
+      },
+      [&]() {
+        ++center_attempts;
+        return p2::runSerialized(motion_mutex, []() { return true; });
+      });
+  update.join();
+
+  assert(failure_latched.load());
+  assert(outcome.result == p2::ScreenResult::kMotionFailed);
+  assert(outcome.targets_dispatched == 0U);
+  assert(outcome.safe_center_attempts == 1U);
+  assert(center_attempts == 1U);
+}
+
 }  // namespace
 
 int main() {
   verifyRejectedDispatch();
   verifyObserver();
   verifySerializedInterleavings();
+  verifyFailureLatchedWhileFinalCenterWaits();
   std::size_t healthy_runs = 0;
   std::size_t fault_runs = 0;
   uint32_t failure_indices_covered = 0;
