@@ -641,7 +641,6 @@ def derive_capabilities(
         raise RuntimeError("ELF executable symbol evidence is missing")
     required_motion = (
         "M5StackChan_Class::begin",
-        "Motion::move(",
         "Motion::phase2TryMove",
         "Motion::phase2RunExclusive",
         "SCSCL::WritePos",

@@ -148,7 +148,6 @@ class IsolatedDriverTests(unittest.TestCase):
         p2_symbols = {
             "uart_write_bytes",
             "M5StackChan_Class::begin()",
-            "Motion::move(int, int, int)",
             "Motion::phase2TryMove(int, int, int)",
             "Motion::phase2RunExclusive(bool (*)())",
             "SCSCL::WritePos(unsigned char, unsigned short, unsigned short, unsigned char)",
