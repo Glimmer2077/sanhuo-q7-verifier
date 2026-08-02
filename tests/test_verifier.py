@@ -1522,6 +1522,16 @@ class TrustedVerifierTests(unittest.TestCase):
             ],
         )
 
+    def test_p2_source_diff_is_bound_to_terminal_stage_marker_build(self) -> None:
+        self.assertEqual(
+            verifier.P2_SOURCE_DIFF_SHA256,
+            "d2c335a0c6348d9c7f37572893906545daf729a75c1f1e7971125b60ff7ffb3f",
+        )
+        self.assertEqual(
+            verifier.P2_CHANGED_SOURCE_HASHES["src/main.cpp"],
+            "55d0df994df9ec49cf124495fb33b740a5faebf7c94f73d113a1d28d8e44dfa0",
+        )
+
     def test_p2_source_diff_rejects_an_allowed_file_drift(self) -> None:
         source_diff = {
             "passed": True,

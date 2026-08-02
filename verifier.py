@@ -4400,7 +4400,7 @@ P2_CONTRACT_SHA256: Final = (
     "3348118754bd19605d51804da783e97ddc9abc26114cb8f53408bd9825f58798"
 )
 P2_SOURCE_DIFF_SHA256: Final = (
-    "fcca83458959b77da2d94181f4d1e90a497aa7449e5a4286475284707bec3b5c"
+    "d2c335a0c6348d9c7f37572893906545daf729a75c1f1e7971125b60ff7ffb3f"
 )
 P2_PARENT_SOURCE_DIFF_SHA256: Final = (
     "55c7bf56969dfdf6afb2c2d5b1f22e5c611022fc808895cb564ba421c2310207"
@@ -4438,7 +4438,7 @@ P2_CHANGED_SOURCE_HASHES: Final = {
         "e53cf1133de43bdc1f2080edf58d448c1960b091421420dc1c07d8dab0910b8d"
     ),
     "src/main.cpp": (
-        "6a9c176fbe7c16923f30959bc19dd0c88041253c21c3c23eead38d29349727a3"
+        "55d0df994df9ec49cf124495fb33b740a5faebf7c94f73d113a1d28d8e44dfa0"
     ),
     "src/motion_matrix_public_targets.h": (
         "fc8cef85af58ab7b7c5728b8a8a2f08e7cc86a8572aadd2e70bacf830c1c747c"
