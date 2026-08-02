@@ -4400,7 +4400,7 @@ P2_CONTRACT_SHA256: Final = (
     "3348118754bd19605d51804da783e97ddc9abc26114cb8f53408bd9825f58798"
 )
 P2_SOURCE_DIFF_SHA256: Final = (
-    "b67abe264b8210d39683709d285234e696c265303fd78bb8c0383731b972692b"
+    "fcca83458959b77da2d94181f4d1e90a497aa7449e5a4286475284707bec3b5c"
 )
 P2_PARENT_SOURCE_DIFF_SHA256: Final = (
     "55c7bf56969dfdf6afb2c2d5b1f22e5c611022fc808895cb564ba421c2310207"
@@ -4423,10 +4423,10 @@ P2_ALLOWED_CHANGED_FILES: Final = [
 ]
 P2_CHANGED_SOURCE_HASHES: Final = {
     "lib/StackChanBSP/src/M5StackChan.cpp": (
-        "094450455921d120e813b46c53be33b5d656e7f4c7b6460f1c60c1630d227929"
+        "693b61ca7e85963aabbb6411c35ee8e38d7822695ebd1b93c30c18c51f60a156"
     ),
     "lib/StackChanBSP/src/M5StackChan.h": (
-        "571c4fdb8e494b27c10fe91ac058ec1301ac57a18623ee6c6630cfeada46adbc"
+        "fa522e4ed616a80ca8177f6c86fd08cfdf5f5919129bc7aec6a480f62c38f8c3"
     ),
     "lib/StackChanBSP/src/utils/motion/motion.cpp": (
         "15d2e29dc262d337e45ea48a3b9a8f0ab59427bc04d7b06b8c825192d806086f"
@@ -4438,7 +4438,7 @@ P2_CHANGED_SOURCE_HASHES: Final = {
         "e53cf1133de43bdc1f2080edf58d448c1960b091421420dc1c07d8dab0910b8d"
     ),
     "src/main.cpp": (
-        "8358641c91b9b29843fff7ac1f08c242ce6f51846e7d9c6c4931cec40543d982"
+        "6a9c176fbe7c16923f30959bc19dd0c88041253c21c3c23eead38d29349727a3"
     ),
     "src/motion_matrix_public_targets.h": (
         "fc8cef85af58ab7b7c5728b8a8a2f08e7cc86a8572aadd2e70bacf830c1c747c"
@@ -4453,7 +4453,7 @@ P2_CHANGED_SOURCE_HASHES: Final = {
         "be2f49119be63482d7e6834a7f3aeca8493b06b9c32098fd878c7470b900b6c6"
     ),
     "src/phase2c_p2_observer_core.h": (
-        "f4067aae2ca578ecc9f53d595997326a93f888ca40167e4444b28a1c930f67d5"
+        "3721da5c5688a6a575fb181d4f962721f595d015c44433a67649d7917c238a98"
     ),
     "src/phase2c_p2_serialization.h": (
         "9b47da1ca021f9f7b9f50fbe97e068a89034bd57f500177072b8ab74ee82dd8e"
@@ -4462,7 +4462,7 @@ P2_CHANGED_SOURCE_HASHES: Final = {
         "8277387f17ffa83f36546cd4c9ad232d01c5d0508bed9b51e75e9f27bb405915"
     ),
     "stackchan-screen.patch": (
-        "132ca34267a56cdf7873e1f37e4e9eff5080299d92a714be8c855612eaaaf75b"
+        "7e54fccfe0a6d27f34f75700c0c5771869aa83010906097d2dffc42339a1a353"
     ),
 }
 

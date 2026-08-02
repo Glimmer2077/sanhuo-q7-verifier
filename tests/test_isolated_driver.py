@@ -49,6 +49,9 @@ class IsolatedDriverTests(unittest.TestCase):
         self.assertIn("p2::runSerializedIfAllowed(", source)
         self.assertIn("p2::runSerialized(", source)
         self.assertIn("verifyFailureLatchedWhileFinalCenterWaits", source)
+        self.assertIn("verifyFeedbackAcceptance", source)
+        self.assertIn("feedbackAccepted(15, 1U, 0U)", source)
+        self.assertIn("feedbackAccepted(15, 0U, 1U)", source)
         self.assertNotIn("phase2c_p2_screen_executor.cpp", source)
 
     def test_trusted_p2_targets_digest_is_fixed(self) -> None:

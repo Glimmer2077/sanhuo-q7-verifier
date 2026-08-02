@@ -485,6 +485,17 @@ void verifyObserver() {
   assert(!late_write.snapshot().safe_center_succeeded);
 }
 
+void verifyFeedbackAcceptance() {
+  assert(p2::ObserverCore::feedbackAccepted(15, 0U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(-1, 0U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 1U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 2U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 3U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 4U, 0U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 0U, 1U));
+  assert(!p2::ObserverCore::feedbackAccepted(15, 0U, 0x40U));
+}
+
 void verifyRejectedDispatch() {
   std::size_t center_attempts = 0;
   const auto outcome = p2::executeScreen(
@@ -617,6 +628,7 @@ void verifyFailureLatchedWhileFinalCenterWaits() {
 int main() {
   verifyRejectedDispatch();
   verifyObserver();
+  verifyFeedbackAcceptance();
   verifySerializedInterleavings();
   verifyFailureLatchedWhileFinalCenterWaits();
   std::size_t healthy_runs = 0;
