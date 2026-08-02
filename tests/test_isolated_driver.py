@@ -76,6 +76,9 @@ class IsolatedDriverTests(unittest.TestCase):
             checkout = Path(temporary) / "checkout"
 
             layout = isolated_driver._target_q5_build_layout(checkout)
+            source = inspect.getsource(
+                isolated_driver.trusted_q5_executor_evidence
+            )
 
         self.assertEqual(
             layout["project_root"],
@@ -89,6 +92,8 @@ class IsolatedDriverTests(unittest.TestCase):
             layout["source"],
             Path("tests/host/motion_matrix/phase2c_p2_screen_executor.cpp"),
         )
+        self.assertIn('payload_root=layout["payload_root"]', source)
+        self.assertIn('source=layout["source"]', source)
 
     def test_relative_q5_compile_is_stable_across_checkout_paths(self) -> None:
         host_cxx = Path("/usr/bin/c++")

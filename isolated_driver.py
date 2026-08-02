@@ -1860,9 +1860,9 @@ def trusted_q5_executor_evidence() -> dict[str, dict[str, object]]:
     target_executable = target_root / "phase2c-p2-screen-executor"
     _compile_q5_harness(
         host_cxx=host_cxx,
-        payload_root=payload_root,
+        payload_root=layout["payload_root"],
         include_root=target_root,
-        source=target_harness,
+        source=layout["source"],
         executable=target_executable,
         cwd=project_root,
     )
